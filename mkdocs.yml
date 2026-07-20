@@ -1,0 +1,10 @@
+site_name: Urban Density Workflow
+site_description: User and developer documentation for a local physical urban-density workflow.
+docs_dir: docs
+theme:
+  name: mkdocs
+nav:
+  - Home: index.md
+  - Configuration: configuration.md
+  - Development: development.md
+

@@ -1,0 +1,151 @@
+from __future__ import annotations
+
+from pathlib import Path
+import sys
+
+import geopandas as gpd
+from shapely.geometry import box
+
+
+TEST_DIR = Path(__file__).resolve().parent
+CODE_DIR = TEST_DIR.parent
+SRC_DIR = CODE_DIR / "src"
+for path in (CODE_DIR, SRC_DIR):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
+
+import run_workflow as workflow_module  # noqa: E402
+from run_workflow import (  # noqa: E402
+    build_cache_manifest,
+    compare_cache_manifests,
+    evaluate_raw_building_cache,
+    prepare_output_directory,
+    validate_raw_buildings_match_aoi,
+    write_cache_manifest,
+)
+
+
+def _inputs():
+    aoi = gpd.GeoDataFrame(
+        {"aoi_name": ["example_area"]},
+        geometry=[box(4.47, 51.91, 4.49, 51.93)],
+        crs="EPSG:4326",
+    )
+    buildings = gpd.GeoDataFrame(
+        {"building_id": ["b1"], "height_m": [12.0]},
+        geometry=[box(4.475, 51.915, 4.476, 51.916)],
+        crs="EPSG:4326",
+    )
+    config = {
+        "project": {"run_name": "cache_test", "output_dir": "04_outputs/cache_test"},
+        "aoi": {"name": "example_area"},
+        "data_source": {
+            "type": "overture",
+            "release": "2026-05-20.0",
+            "provider": "aws",
+            "exclude_underground": True,
+        },
+        "preprocessing": {"target_crs": "auto_utm", "clip_to_aoi": True},
+        "height_enrichment": {
+            "enabled": True,
+            "min_overlap_share": 0.2,
+            "min_valid_height_m": 2.0,
+            "replace_existing_height": False,
+        },
+        "street_context": {
+            "enabled": True,
+            "source": "osmnx",
+            "network_type": "drive",
+            "distance_m": 10,
+            "tick_length_m": 60,
+        },
+    }
+    return config, aoi, buildings
+
+
+def _manifest(config, aoi, buildings):
+    return build_cache_manifest(
+        config=config,
+        aoi=aoi,
+        target_crs="EPSG:32631",
+        buildings_clean=buildings,
+        buildings_raw=buildings,
+        created_at="2026-07-20T00:00:00",
+    )
+
+
+def test_matching_manifest_is_compatible():
+    config, aoi, buildings = _inputs()
+    manifest = _manifest(config, aoi, buildings)
+    result = compare_cache_manifests(manifest, dict(manifest))
+    assert result["cache_source_compatibility_status"] == "compatible"
+    assert result["cache_source_compatibility_warnings"] == []
+
+
+def test_changed_scientific_setting_rejects_manifest():
+    config, aoi, buildings = _inputs()
+    current = _manifest(config, aoi, buildings)
+    source = dict(current)
+    source["height_enrichment"] = {
+        **source["height_enrichment"],
+        "min_overlap_share": 0.5,
+    }
+    result = compare_cache_manifests(current, source)
+    assert result["cache_source_compatibility_status"] == "mismatch_detected"
+
+
+def test_incompatible_area_rejects_raw_cache(tmp_path):
+    config, source_aoi, buildings = _inputs()
+    requested_aoi = gpd.GeoDataFrame(
+        {"aoi_name": ["different_area"]},
+        geometry=[box(5.1, 52.0, 5.2, 52.1)],
+        crs="EPSG:4326",
+    )
+    raw_path = tmp_path / "raw" / "buildings_raw_overture.gpkg"
+    raw_path.parent.mkdir(parents=True)
+    buildings.to_file(raw_path, layer="buildings_raw", driver="GPKG")
+    manifest_path = tmp_path / "reports" / "cache_manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    write_cache_manifest(manifest_path, _manifest(config, source_aoi, buildings))
+
+    decision = evaluate_raw_building_cache(
+        config,
+        requested_aoi,
+        raw_path,
+        manifest_path,
+        require_compatible_manifest=True,
+    )
+    assert decision["use_cache"] is False
+    assert decision["cache_compatibility_status"] == "rejected"
+
+
+def test_non_overlapping_raw_bounds_stop_processing():
+    _config, aoi, _buildings = _inputs()
+    other = gpd.GeoDataFrame(
+        {"building_id": ["other"]},
+        geometry=[box(5.1, 52.0, 5.11, 52.01)],
+        crs="EPSG:4326",
+    )
+    ok, message = validate_raw_buildings_match_aoi(other, aoi)
+    assert ok is False
+    assert "do not spatially match" in message
+
+
+def test_overwrite_removes_run_but_protects_global_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr(workflow_module, "PROJECT_ROOT", tmp_path)
+    run_dir = tmp_path / "04_outputs" / "run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "stale.txt").write_text("stale", encoding="utf-8")
+    prepare_output_directory(run_dir, overwrite_existing_run=True)
+    assert not run_dir.exists()
+
+    global_cache = tmp_path / "04_outputs" / "_cache"
+    global_cache.mkdir(parents=True)
+    try:
+        prepare_output_directory(global_cache, overwrite_existing_run=True)
+    except ValueError as exc:
+        assert "Refusing to overwrite" in str(exc)
+    else:
+        raise AssertionError("Global cache deletion should be refused")
+    assert global_cache.exists()
+
