@@ -1,18 +1,16 @@
 # Urban Density Workflow
 
-Urban Density Workflow is an open-source research prototype for reproducible physical urban-density analysis and exploratory spatial analysis. It measures building-based density and contextual urban morphology within a user-defined analysis area; it does **not** measure population density. The results are intended for research and exploratory use, not authoritative regulatory or planning assessment.
+Urban Density Workflow is an open-source research prototype for reproducible physical urban-density analysis and exploratory spatial analysis. It measures building-based density and contextual urban morphology within a user-defined analysis area. The results are intended for research and exploratory use.
 
 ## Workflow stages
 
 1. Define an analysis area and settings in the local Streamlit application or a YAML configuration.
 2. Acquire Overture Maps Buildings for the selected area.
-3. clean and clip building geometries, select a metric CRS, and create a regular grid.
-4. Optionally fill missing building heights from Global Building Atlas LoD1 data.
-5. Calculate the enabled density and contextual morphology indicators.
-6. Aggregate building-level and intersection-based results to grid cells.
-7. Write spatial outputs, quality diagnostics, and indicator-readiness reports.
+3. Clean and clip building geometries, select a metric CRS, and create a regular grid.
+4. Calculate the enabled density and contextual morphology indicators.
+5. Aggregate building-level and intersection-based results to grid cells.
+6. Write spatial outputs, quality diagnostics, and indicator-readiness reports.
 
-The workflow supports automatic single-CRS UTM processing and staged segmented UTM processing for analysis areas crossing UTM-zone boundaries.
 
 ## Implemented indicators
 
@@ -32,8 +30,6 @@ The implemented FAR/FSI formula is:
 sum(intersected footprint area x valid number of floors) / grid-cell area
 ```
 
-The production calculation uses the `num_floors` building attribute; it does not currently accept a separate direct total-floor-area input. Missing or non-positive floor counts remain missing and are not replaced by zero or a default. Buildings without valid floor data therefore contribute no known floor area. Interpret cells with partial floor support together with their readiness status and floor-data valid-area share.
-
 ### Average nearest-building distance
 
 For each building, the workflow:
@@ -43,13 +39,13 @@ For each building, the workflow:
 3. assigns the building-level value to a grid cell using the building's representative point; and
 4. averages the assigned nearest-building distances within each grid cell.
 
-Touching or overlapping footprints can legitimately have a distance of zero. The indicator is not the average distance to all adjacent buildings.
+Touching or overlapping footprints can legitimately have a distance of zero.
 
 ## Primary density and contextual morphology
 
 GSI / Building Coverage Ratio is the primary 2D physical-density indicator. FAR/FSI and Built Volume Density add vertical information when floor-count and height support are sufficient.
 
-Average nearest-building distance describes building spacing. Street-profile height-to-width ratio describes contextual height-width morphology around streets. These are contextual morphology indicators rather than primary density indicators.
+Average nearest-building distance describes building spacing. Street-profile height-to-width ratio describes contextual height-width morphology around streets. These are contextual morphology indicators.
 
 ## Implemented data sources
 
@@ -132,7 +128,6 @@ The supported configuration-generator modes are:
 - `standard`: GSI, FAR/FSI, and Built Volume Density; optional height enrichment is enabled.
 - `full_context`: the standard indicators plus Average nearest-building distance and street-profile processing.
 
-The workflow may also be run without a command-line path; in that case it uses `03_code/config/example_urban_area_100m.yaml`. Supplying the path explicitly is recommended for reproducibility.
 
 ## Analysis area
 
@@ -146,7 +141,6 @@ Grid size is specified in metres. Smaller cells provide finer local summaries bu
 
 The Streamlit application can recalculate a selected completed analysis at another grid size. It preserves the stored analysis-area definition and scientific settings, then requests compatible reuse of prepared building, height, neighbour, and street-context products. Cache compatibility remains mandatory. Grid creation, exact building-grid intersections, grid aggregation, diagnostics, and dashboard presentation are recalculated.
 
-Changing grid size is not instantaneous, and cells at different resolutions are not equivalent spatial objects.
 
 ## Outputs
 
@@ -173,8 +167,6 @@ The dashboard translates stored readiness evidence into five consistent user-fac
 - **UNAVAILABLE:** the indicator cannot be calculated from the available inputs.
 - **NOT REPORTED:** no readiness assessment exists for that result.
 
-`NOT REPORTED` is not a data-quality class. It describes the absence of a readiness assessment, not evidence that an indicator is reliable or unreliable.
-
 Read `reports/indicator_readiness.md` before interpreting results, followed by `reports/quality_report.md`. A calculated value may still have limited support when height, floor, street-match, or grid-cell coverage is incomplete.
 
 ## Missing and zero values
@@ -185,13 +177,8 @@ Missing input data and true zero values have different meanings:
 - missing floor count is not zero floors;
 - missing building attributes are not filled with zero;
 - a grid cell containing no mapped building footprints may legitimately have GSI = 0 and FAR/FSI = 0 relative to the available footprint dataset;
-- describe such a cell as having **no mapped buildings in the available footprint data**, not as proof that no buildings exist;
-- a cell containing mapped buildings but no valid floor-count support must not be interpreted as FAR/FSI = 0;
-- a cell containing mapped buildings but no valid height support must not be interpreted as Built Volume Density = 0;
-- partially supported values must be interpreted together with readiness and valid-data shares;
-- blank conditional or contextual cells indicate missing or insufficient input support, not automatically a low value.
 
-Raw GSI values above 1 are retained as overlap or geometry diagnostics rather than presented as normal physical coverage values.
+Raw GSI values above 1 are retained as overlap or geometry diagnostics.
 
 ## Optional GBA height enrichment
 
