@@ -58,7 +58,8 @@ def test_valid_bbox_writes_yaml_file(tmp_path):
     assert config["aggregation"]["cell_size_m"] == 100
     assert config["preprocessing"]["target_crs"] == "auto_utm"
     assert config["crs_strategy"]["processing_mode"] == "single_crs"
-    assert config["data_source"]["release"] == "2026-06-17.0"
+    assert config["data_source"]["overture_release"] == "auto"
+    assert config["data_source"]["release"] == "auto"
     assert config["cache"]["require_compatible_manifest"] is True
     assert config["cache"]["use_existing_raw_buildings"] is True
 

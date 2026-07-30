@@ -16,8 +16,22 @@ from typing import Literal
 import geopandas as gpd
 import pandas as pd
 
+from overture_releases import (
+    OvertureReleaseDiscoveryError,
+    OvertureReleaseUnavailableError,
+    resolve_overture_release,
+)
+
 
 logger = logging.getLogger(__name__)
+
+
+class OvertureAcquisitionError(RuntimeError):
+    """Acquisition failure with a stable category for reports and the dashboard."""
+
+    def __init__(self, category: str, message: str):
+        super().__init__(message)
+        self.category = category
 
 
 OVERTURE_BUILDING_COLUMNS = [
@@ -48,10 +62,11 @@ class OvertureAdapter:
     reprojection to a suitable projected CRS with metre-based units.
     """
 
-    release: str = "2026-06-17.0"
+    release: str = "auto"
     provider: Literal["aws"] = "aws"
     exclude_underground: bool = True
     clip_to_aoi: bool = False
+    verify_release: bool = True
 
     def fetch_buildings(self, aoi_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         """
@@ -78,6 +93,15 @@ class OvertureAdapter:
         RuntimeError
             If the Overture query fails.
         """
+        if self.verify_release:
+            try:
+                self.release = resolve_overture_release(
+                    self.release, provider=self.provider
+                ).resolved_release
+            except OvertureReleaseUnavailableError as exc:
+                raise OvertureAcquisitionError("release_unavailable", str(exc)) from exc
+            except OvertureReleaseDiscoveryError as exc:
+                raise OvertureAcquisitionError("release_discovery_failed", str(exc)) from exc
         aoi_wgs84 = self._prepare_aoi_wgs84(aoi_gdf)
         aoi_geometry = aoi_wgs84.geometry.union_all()
 
@@ -244,9 +268,11 @@ class OvertureAdapter:
             return result
 
         except Exception as exc:
-            raise RuntimeError(
-                "Overture Maps Buildings query failed. "
-                "Check internet access, DuckDB extensions, release name, and AOI size."
+            text = str(exc).lower()
+            category = "network_failure" if any(token in text for token in ("http", "ssl", "timeout", "connection")) else "query_failed"
+            raise OvertureAcquisitionError(
+                category,
+                f"Overture Maps Buildings query failed; category={category}; release={self.release}.",
             ) from exc
 
     @staticmethod
@@ -274,8 +300,9 @@ class OvertureAdapter:
 
         missing_columns = required_columns - set(raw_df.columns)
         if missing_columns:
-            raise RuntimeError(
-                f"Overture output is missing expected columns: {missing_columns}"
+            raise OvertureAcquisitionError(
+                "schema_mismatch",
+                f"Overture output is missing expected columns: {missing_columns}",
             )
 
         geometry_wkb = raw_df["geometry_wkb"].apply(

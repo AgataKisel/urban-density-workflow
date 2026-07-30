@@ -48,6 +48,7 @@ from height_enrichment import (
 
 from aoi import create_aoi_from_bbox, load_aoi, validate_aoi
 from data_io import OvertureAdapter
+from overture_releases import ResolvedOvertureRelease, is_dated_release, resolve_overture_release
 from preprocessing import (
     estimate_metric_crs,
     reproject_to_metric,
@@ -110,6 +111,35 @@ def load_config(config_path: Path) -> dict[str, Any]:
         raise ValueError(f"Config file is empty: {config_path}")
 
     return config
+
+
+def resolve_configured_overture_release(config: dict[str, Any]) -> ResolvedOvertureRelease | None:
+    """Resolve ``auto`` once and normalize final source provenance."""
+    source = config.get("data_source", {})
+    if source.get("type") != "overture":
+        return None
+    requested = str(source.get("overture_release", source.get("release", "auto"))).strip()
+    provider = str(source.get("provider", "aws"))
+    if requested.lower() == "latest":
+        raise ValueError("Use overture_release: auto instead of latest.")
+    if requested.lower() == "auto":
+        resolution = resolve_overture_release("auto", provider=provider)
+    elif is_dated_release(requested):
+        # Pinned data may be validly supplied by a compatible local cache after
+        # upstream retention expires, so availability is checked only on fetch.
+        resolution = ResolvedOvertureRelease(requested, requested, "pinned", provider, "official AWS Buildings prefix verification at acquisition")
+    else:
+        raise ValueError("overture_release must be auto or a dated identifier.")
+    source.update({
+        "overture_release": resolution.resolved_release,
+        "release": resolution.resolved_release,
+        "requested_overture_release": resolution.requested_release,
+        "resolved_overture_release": resolution.resolved_release,
+        "release_mode": resolution.mode,
+        "release_discovery_url": resolution.discovery_url,
+    })
+    config["data_source"] = source
+    return resolution
 
 
 def setup_output_folders(output_dir: Path) -> dict[str, Path]:
@@ -968,13 +998,14 @@ def diagnose_gsi_over_1_cells(indicator_grid, buildings) -> pd.DataFrame:
     overlapping footprints / double counting rather than by CRS, unit-area,
     or formula errors.
     """
-    if "gsi" not in indicator_grid.columns:
+    raw_column = "gsi_raw_sum" if "gsi_raw_sum" in indicator_grid.columns else "gsi"
+    if raw_column not in indicator_grid.columns:
         return pd.DataFrame()
 
     if "unit_area_m2" not in indicator_grid.columns:
         return pd.DataFrame()
 
-    gsi_values = pd.to_numeric(indicator_grid["gsi"], errors="coerce")
+    gsi_values = pd.to_numeric(indicator_grid[raw_column], errors="coerce")
     problem_cells = indicator_grid[gsi_values > 1].copy()
 
     if problem_cells.empty:
@@ -2228,8 +2259,8 @@ def write_markdown_quality_report(
             "",
             "## GSI sanity checks",
             "",
-            "GSI / Building Coverage Ratio should theoretically fall between 0 and 1. "
-            "Values above 1 are flagged as suspicious and are not corrected automatically.",
+            "Official union-based GSI / Building Coverage Ratio is bounded between 0 and 1. "
+            "The separately retained raw-sum diagnostic can exceed 1 where input footprints overlap.",
             "",
         ])
 
@@ -2241,7 +2272,7 @@ def write_markdown_quality_report(
                 "",
                 "### GSI warning",
                 "",
-                "One or more aggregation cells have `GSI > 1`. This can indicate "
+                "One or more aggregation cells have raw-sum GSI above 1. This can indicate "
                 "overlapping building footprints, source geometry artefacts, or "
                 "double counting of overlapping footprint areas.",
                 "",
@@ -2257,7 +2288,7 @@ def write_markdown_quality_report(
         else:
             lines.extend([
                 "",
-                "No cells with `GSI > 1` were detected in this run.",
+                "No cells with raw-sum GSI above 1 were detected in this run.",
             ])
 
     if saved_maps is not None:
@@ -2361,6 +2392,7 @@ def run_workflow(config_path: Path) -> None:
     Run the complete minimal workflow for one pilot AOI.
     """
     config = load_config(config_path)
+    resolve_configured_overture_release(config)
     output_mode = config.get("outputs", {}).get("mode", "research")
     if output_mode not in {"compact", "research"}:
         raise ValueError("outputs.mode must be `compact` or `research`.")
@@ -2403,8 +2435,10 @@ def run_workflow(config_path: Path) -> None:
     logging.info("Config path: %s", config_path)
     logging.info("Output directory: %s", output_dir)
 
-    # Save the exact config used for this run.
-    shutil.copy2(config_path, folders["reports"] / "config_used.yaml")
+    # Save the resolved exact release, never the moving ``auto`` request.
+    (folders["reports"] / "config_used.yaml").write_text(
+        yaml.safe_dump(config, sort_keys=False), encoding="utf-8"
+    )
 
     # 1. AOI
     stage_start = time.perf_counter()
@@ -3195,7 +3229,15 @@ def run_workflow(config_path: Path) -> None:
         )
         comparison_current_manifest = dict(current_cache_manifest)
         comparison_source_manifest = dict(source_cache_manifest or {})
-        if not used_cached_enriched_buildings and not used_cached_cleaned_buildings:
+        if used_cached_enriched_buildings or used_cached_cleaned_buildings:
+            # A GeoPackage round trip can change pandas dtype representation and
+            # therefore a dataframe hash, despite loading the exact recorded
+            # source artifact. The source manifest remains authoritative when
+            # the compatible prepared layer itself was reused.
+            comparison_current_manifest["input_layer_hashes"] = dict(
+                comparison_source_manifest.get("input_layer_hashes", {})
+            )
+        else:
             comparison_current_manifest["input_layer_hashes"] = {
                 "buildings_raw": current_cache_manifest.get(
                     "input_layer_hashes", {}
@@ -3849,18 +3891,21 @@ def run_workflow(config_path: Path) -> None:
     gsi_over_1_diagnostics = pd.DataFrame()
 
     if "gsi" in indicator_grid.columns:
-        gsi_values = pd.to_numeric(indicator_grid["gsi"], errors="coerce")
-        gsi_over_1_cells = indicator_grid[gsi_values > 1].copy()
+        raw_gsi_values = pd.to_numeric(
+            indicator_grid.get("gsi_raw_sum", indicator_grid["gsi"]),
+            errors="coerce",
+        )
+        gsi_over_1_cells = indicator_grid[raw_gsi_values > 1].copy()
 
         if not gsi_over_1_cells.empty:
             logging.warning(
-                "Found %s cells with GSI > 1.",
+                "Found %s cells with raw summed GSI > 1; official union GSI is retained.",
                 len(gsi_over_1_cells),
             )
 
             if config.get("outputs", {}).get("save_gsi_sanity_diagnostics", False):
                 logging.warning(
-                    "Exporting GSI > 1 cells and diagnostics for inspection."
+                    "Exporting raw-sum overlap diagnostics for inspection."
                 )
 
                 gsi_over_1_cells.to_file(
@@ -3890,7 +3935,7 @@ def run_workflow(config_path: Path) -> None:
                     gsi_over_1_diagnostics["dissolved_gsi"].max(),
                 )
         else:
-            logging.info("No cells with GSI > 1 found.")
+            logging.info("No cells with raw-sum GSI > 1 found.")
 
     gsi_sanity_summary = summarize_gsi_sanity(
         indicator_grid=indicator_grid,
