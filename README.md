@@ -16,7 +16,7 @@ Urban Density Workflow is an open-source research prototype for reproducible phy
 
 | Indicator | Unit | Role | Implemented calculation and inputs |
 |---|---:|---|---|
-| GSI / Building Coverage Ratio | ratio | Primary 2D density | Intersected mapped-building footprint area divided by grid-cell area. Requires building footprints. |
+| GSI / Building Coverage Ratio | ratio | Primary 2D density | Geometric union of intersected mapped-building footprints divided by grid-cell area. Overlap is counted once. |
 | FAR/FSI | ratio | Conditional density | Sum of intersected footprint area multiplied by valid floor count, divided by grid-cell area. Requires building footprints and valid floor-count data. |
 | Built Volume Density | m3/m2 | Conditional 3D density | Sum of intersected footprint area multiplied by valid building height, divided by grid-cell area. |
 | Average nearest-building distance | m | Contextual morphology | Mean grid-cell value of each assigned building's nearest footprint-to-footprint distance. |
@@ -178,17 +178,17 @@ Missing input data and true zero values have different meanings:
 - missing building attributes are not filled with zero;
 - a grid cell containing no mapped building footprints may legitimately have GSI = 0 and FAR/FSI = 0 relative to the available footprint dataset;
 
-Raw GSI values above 1 are retained as overlap or geometry diagnostics.
+The official union-based GSI remains within its physical 0-1 range. The independently summed raw coverage remains available only as an overlap diagnostic.
 
 ## Optional GBA height enrichment
 
 Global Building Atlas LoD1 enrichment is optional. It fills missing heights only and preserves valid existing heights. Availability and practical download size depend on the selected analysis area; network and storage requirements may be substantial, and the source is not guaranteed to be usable for every run.
 
-For RC2, adapter behavior, metric matching, minimum-overlap rules, and fill-missing-only behavior were tested offline. The live GBA network branch was not executed during release validation.
+The adapter behaviour, metric matching, minimum-overlap rules, and fill-missing-only behaviour are covered by offline tests. Global Building Atlas availability and download size remain analysis-area dependent.
 
 ## Cache-aware repeated runs
 
-Reuse flags mean **reuse only when compatible**. Cache checks include the analysis area, source release and provider, processing and CRS settings, relevant stage parameters, and recorded manifests. Incompatible cache products are rejected rather than silently mixed with a new run.
+Reuse flags mean **reuse only when compatible**. Cache checks include the analysis area, exact resolved source release and provider, processing and CRS settings, relevant stage parameters, and recorded manifests. Incompatible cache products are rejected rather than silently mixed with a new run. New interface analyses use `overture_release: auto`, which resolves one dated release at run start; reproducible studies should pin a dated release.
 
 Compatible cached products can reduce repeated processing, especially when changing only grid size. Shared cache directories are separate from individual run folders, and overwrite behavior is limited to the selected run directory.
 
