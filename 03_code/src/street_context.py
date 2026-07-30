@@ -6,6 +6,81 @@ from typing import Any
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import shapely
+
+
+# This numerical tolerance rejects floating-point residues. It is not a
+# physical minimum street width.
+METRIC_GEOMETRY_TOLERANCE_M = 1e-6
+STREET_PROFILE_RATIO_OUTLIER_THRESHOLD = 10.0
+STREET_PROFILE_TOPOLOGY_RULE_VERSION = "1"
+
+
+def add_street_profile_width_diagnostics(
+    street_profiles: gpd.GeoDataFrame,
+    width_col: str = "street_profile_width_m",
+    geometry_tolerance_m: float = METRIC_GEOMETRY_TOLERANCE_M,
+) -> gpd.GeoDataFrame:
+    """Classify numeric and geometric denominator failures without altering widths."""
+    if width_col not in street_profiles.columns:
+        raise ValueError(f"Street-profile width column not found: {width_col}")
+    if geometry_tolerance_m <= 0 or not np.isfinite(geometry_tolerance_m):
+        raise ValueError("geometry_tolerance_m must be finite and positive.")
+    _ensure_projected_crs(street_profiles, "street_profiles")
+    result = street_profiles.copy()
+    width = pd.to_numeric(result[width_col], errors="coerce")
+    result[width_col] = width
+    geometry_length = result.geometry.length
+    result["street_profile_geometry_length_m"] = geometry_length
+    reason = pd.Series(pd.NA, index=result.index, dtype="string")
+    reason.loc[result.geometry.isna()] = "profile_geometry_missing"
+    reason.loc[reason.isna() & result.geometry.is_empty.fillna(False)] = "profile_geometry_empty"
+    reason.loc[reason.isna() & geometry_length.notna() & (geometry_length <= geometry_tolerance_m)] = "profile_geometry_zero_length"
+    reason.loc[reason.isna() & width.isna()] = "profile_width_missing"
+    reason.loc[reason.isna() & ~np.isfinite(width)] = "profile_width_non_finite"
+    reason.loc[reason.isna() & (width < 0)] = "profile_width_negative"
+    reason.loc[reason.isna() & (width == 0)] = "profile_width_zero"
+    reason.loc[reason.isna() & (width > 0) & (width <= geometry_tolerance_m)] = "profile_width_below_metric_tolerance"
+    result["street_profile_width_valid"] = reason.isna()
+    result["street_profile_width_invalid_reason"] = reason
+    return result
+
+
+def add_street_profile_topology_diagnostics(
+    street_profiles: gpd.GeoDataFrame,
+    buildings: gpd.GeoDataFrame,
+    distance: float = 10.0,
+) -> gpd.GeoDataFrame:
+    """Flag sampled profile origins intersecting or touching a building footprint."""
+    if distance <= 0 or not np.isfinite(distance):
+        raise ValueError("distance must be finite and positive.")
+    _ensure_projected_crs(street_profiles, "street_profiles")
+    _ensure_projected_crs(buildings, "buildings")
+    _same_crs(street_profiles, buildings, "street_profiles", "buildings")
+    result = street_profiles.copy()
+    valid_buildings = buildings[buildings.geometry.notna() & ~buildings.geometry.is_empty].copy()
+    segmented = shapely.segmentize(result.geometry.array, float(distance))
+    coordinates, street_rows = shapely.get_coordinates(segmented, return_index=True)
+    origin_count = np.bincount(street_rows, minlength=len(result))
+    intersecting_count = np.zeros(len(result), dtype=int)
+    if len(coordinates) and not valid_buildings.empty:
+        pairs = shapely.STRtree(valid_buildings.geometry.array).query(
+            shapely.points(coordinates), predicate="intersects"
+        )
+        if pairs.size:
+            intersecting_count = np.bincount(
+                street_rows[np.unique(pairs[0])], minlength=len(result)
+            )
+    result["street_profile_origin_count"] = origin_count
+    result["street_profile_origin_intersecting_building_count"] = intersecting_count
+    result["street_profile_topology_valid"] = intersecting_count == 0
+    result["street_profile_topology_invalid_reason"] = pd.Series(
+        np.where(intersecting_count > 0, "profile_origin_intersects_building", pd.NA),
+        index=result.index, dtype="string"
+    )
+    normalized = pd.Series(shapely.to_wkb(shapely.normalize(result.geometry.array), hex=True), index=result.index)
+    result["street_profile_coincident_geometry_count"] = normalized.map(normalized.value_counts()).fillna(0).astype(int) - 1
+    return result
 
 
 def _ensure_projected_crs(gdf: gpd.GeoDataFrame, name: str) -> None:
@@ -270,9 +345,15 @@ def calculate_street_profile_segments(
         streets_profile["street_profile_width_m"] >= float(tick_length) * 0.99
     )
 
+    streets_profile = add_street_profile_width_diagnostics(streets_profile)
+    streets_profile = add_street_profile_topology_diagnostics(
+        streets_profile,
+        buildings_for_profile,
+        distance=distance,
+    )
     streets_profile["has_opposite_profile_evidence"] = (
-        streets_profile["street_profile_width_m"].notna()
-        & (streets_profile["street_profile_width_m"] > 0)
+        streets_profile["street_profile_width_valid"]
+        & streets_profile["street_profile_topology_valid"]
         & (~streets_profile["street_profile_width_is_capped"].fillna(False))
         & (
             (streets_profile["street_profile_openness"] < 1)
@@ -282,7 +363,7 @@ def calculate_street_profile_segments(
 
     logging.info(
         "Street profile calculated. valid_width=%s/%s",
-        int(streets_profile["street_profile_width_m"].notna().sum()),
+        int(streets_profile["street_profile_width_valid"].sum()),
         len(streets_profile),
     )
 
@@ -338,6 +419,16 @@ def assign_buildings_to_street_profiles(
         [building_id_col, "building_row_id", height_col, "geometry"]
     ].copy()
 
+    diagnostic_cols = [
+        "street_profile_geometry_length_m",
+        "street_profile_width_valid",
+        "street_profile_width_invalid_reason",
+        "street_profile_origin_count",
+        "street_profile_origin_intersecting_building_count",
+        "street_profile_topology_valid",
+        "street_profile_topology_invalid_reason",
+        "street_profile_coincident_geometry_count",
+    ]
     streets_for_join = streets_profile[
         [
             "street_id",
@@ -348,7 +439,7 @@ def assign_buildings_to_street_profiles(
             "street_profile_width_is_capped",
             "has_opposite_profile_evidence",
             "geometry",
-        ]
+        ] + [column for column in diagnostic_cols if column in streets_profile.columns]
     ].copy()
 
     streets_for_join = streets_for_join[
@@ -428,6 +519,8 @@ def assign_buildings_to_street_profiles(
 def calculate_building_street_profile_ratio(
     building_street: gpd.GeoDataFrame,
     height_col: str = "height_m",
+    geometry_tolerance_m: float = METRIC_GEOMETRY_TOLERANCE_M,
+    outlier_threshold: float = STREET_PROFILE_RATIO_OUTLIER_THRESHOLD,
 ) -> gpd.GeoDataFrame:
     """
     Calculate building-level street-profile height-to-width ratio.
@@ -449,6 +542,11 @@ def calculate_building_street_profile_ratio(
 
     if missing_cols:
         raise ValueError(f"Missing required columns: {missing_cols}")
+    if geometry_tolerance_m <= 0 or not np.isfinite(geometry_tolerance_m):
+        raise ValueError("geometry_tolerance_m must be finite and positive.")
+    if outlier_threshold <= 0 or not np.isfinite(outlier_threshold):
+        raise ValueError("outlier_threshold must be finite and positive.")
+    _ensure_projected_crs(building_street, "building_street")
 
     result = building_street.copy()
 
@@ -458,15 +556,34 @@ def calculate_building_street_profile_ratio(
         result["street_profile_width_m"],
         errors="coerce",
     )
+    if "street_profile_width_valid" not in result.columns:
+        width = result["street_profile_width_m"]
+        reason = pd.Series(pd.NA, index=result.index, dtype="string")
+        reason.loc[width.isna()] = "profile_width_missing"
+        reason.loc[reason.isna() & ~np.isfinite(width)] = "profile_width_non_finite"
+        reason.loc[reason.isna() & (width < 0)] = "profile_width_negative"
+        reason.loc[reason.isna() & (width == 0)] = "profile_width_zero"
+        reason.loc[reason.isna() & (width > 0) & (width <= geometry_tolerance_m)] = "profile_width_below_metric_tolerance"
+        result["street_profile_width_valid"] = reason.isna()
+        result["street_profile_width_invalid_reason"] = reason
+    else:
+        result["street_profile_width_valid"] = result["street_profile_width_valid"].fillna(False).astype(bool)
+    if "street_profile_topology_valid" not in result.columns:
+        result["street_profile_topology_valid"] = True
+    else:
+        result["street_profile_topology_valid"] = result["street_profile_topology_valid"].fillna(False).astype(bool)
+    if "street_profile_topology_invalid_reason" not in result.columns:
+        result["street_profile_topology_invalid_reason"] = pd.Series(pd.NA, index=result.index, dtype="string")
 
     result["street_profile_height_to_width_ratio_prelim"] = np.nan
     result["street_profile_height_to_width_ratio_strict"] = np.nan
 
     valid_prelim_mask = (
         result[height_col].notna()
-        & result["street_profile_width_m"].notna()
+        & np.isfinite(result[height_col])
         & (result[height_col] > 0)
-        & (result["street_profile_width_m"] > 0)
+        & result["street_profile_width_valid"]
+        & result["street_profile_topology_valid"]
     )
 
     valid_strict_mask = (
@@ -492,6 +609,20 @@ def calculate_building_street_profile_ratio(
 
     result["has_valid_street_profile_ratio_prelim"] = valid_prelim_mask
     result["has_valid_street_profile_ratio_strict"] = valid_strict_mask
+    reason = result["street_profile_width_invalid_reason"].astype("string").copy()
+    reason.loc[reason.isna() & ~result["street_profile_topology_valid"]] = result.loc[
+        reason.isna() & ~result["street_profile_topology_valid"],
+        "street_profile_topology_invalid_reason",
+    ].fillna("profile_topology_invalid")
+    reason.loc[reason.isna() & result[height_col].isna()] = "height_missing"
+    reason.loc[reason.isna() & (result[height_col] <= 0)] = "height_non_positive"
+    result["street_profile_ratio_prelim_invalid_reason"] = reason
+    strict_reason = reason.copy()
+    strict_reason.loc[strict_reason.isna() & ~result["has_opposite_profile_evidence"].fillna(False)] = "missing_opposite_profile_evidence"
+    result["street_profile_ratio_strict_invalid_reason"] = strict_reason
+    result["street_profile_ratio_outlier_flag"] = (
+        pd.to_numeric(result["street_profile_height_to_width_ratio_strict"], errors="coerce").gt(outlier_threshold)
+    )
 
     return result
 
@@ -631,9 +762,15 @@ def summarize_street_profile_quality(
         return float(count / total)
 
     valid_width_count = int(
-        streets_profile["street_profile_width_m"].notna().sum()
-        if "street_profile_width_m" in streets_profile.columns
-        else 0
+        streets_profile["street_profile_width_valid"].fillna(False).sum()
+        if "street_profile_width_valid" in streets_profile.columns
+        else streets_profile.get("street_profile_width_m", pd.Series(dtype=float)).notna().sum()
+    )
+    invalid_width_count = int(n_streets - valid_width_count)
+    topology_valid_count = int(
+        streets_profile["street_profile_topology_valid"].fillna(False).sum()
+        if "street_profile_topology_valid" in streets_profile.columns
+        else n_streets
     )
 
     capped_width_count = count_true(
@@ -672,6 +809,21 @@ def summarize_street_profile_quality(
         "n_street_segments": n_streets,
         "valid_width_count": valid_width_count,
         "valid_width_share": share(valid_width_count, n_streets),
+        "invalid_width_count": invalid_width_count,
+        "profile_width_geometry_tolerance_m": METRIC_GEOMETRY_TOLERANCE_M,
+        "profile_width_invalid_reasons": {
+            str(key): int(value) for key, value in streets_profile.get(
+                "street_profile_width_invalid_reason", pd.Series(dtype="string")
+            ).dropna().value_counts().items()
+        },
+        "street_profile_topology_rule_version": STREET_PROFILE_TOPOLOGY_RULE_VERSION,
+        "topology_valid_count": topology_valid_count,
+        "topology_invalid_count": int(n_streets - topology_valid_count),
+        "topology_invalid_reasons": {
+            str(key): int(value) for key, value in streets_profile.get(
+                "street_profile_topology_invalid_reason", pd.Series(dtype="string")
+            ).dropna().value_counts().items()
+        },
         "width_min_m": _safe_stat(
             streets_profile.get("street_profile_width_m", pd.Series(dtype=float)),
             "min",
