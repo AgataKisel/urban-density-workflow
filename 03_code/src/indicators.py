@@ -9,6 +9,10 @@ import numpy as np
 import pandas as pd
 import shapely
 
+INDICATOR_DEFINITION_VERSION = "2"
+GSI_NUMERICAL_TOLERANCE = 1e-9
+FOOTPRINT_OVERLAP_AREA_TOLERANCE_M2 = 1e-6
+
 
 @dataclass(frozen=True)
 class IndicatorSpec:
@@ -121,24 +125,37 @@ def calculate_gsi(
     """
     Calculate Ground Space Index / Building Coverage Ratio.
 
-    GSI = sum(building footprint area inside unit) / unit area
+    GSI = area(union(building footprint intersections inside unit)) / unit area
 
     Scientific note:
     Buildings are intersected with aggregation units. This avoids assigning
     an entire building to one grid cell when it crosses a grid boundary.
     """
-    ensure_same_projected_crs(buildings, units)
     validate_required_columns(buildings, ("building_id", "geometry"), "buildings")
     validate_required_columns(units, ("unit_id", "geometry"), "units")
-
+    ensure_projected_crs(units, "Aggregation units")
     u = _prepare_units(units)
     b = buildings[["building_id", "geometry"]].copy()
+    if not b.empty:
+        ensure_same_projected_crs(buildings, units)
+
+    out = u[["unit_id", "unit_area_m2"]].copy()
+    diagnostic_columns = [
+        "building_footprint_area_m2",
+        "building_footprint_area_raw_sum_m2",
+        "building_footprint_union_area_m2",
+        "gsi",
+        "gsi_raw_sum",
+        "footprint_overlap_area_m2",
+        "gsi_overlap_difference",
+        "footprint_overlap_flag",
+    ]
 
     if b.empty:
-        out = u[["unit_id", "unit_area_m2"]].copy()
-        out["building_footprint_area_m2"] = 0.0
-        out["gsi"] = 0.0
-        return out[["unit_id", "building_footprint_area_m2", "gsi"]]
+        for column in diagnostic_columns:
+            out[column] = 0.0
+        out["footprint_overlap_flag"] = False
+        return out.drop(columns=["unit_area_m2"])
 
     intersections = gpd.overlay(
         u[["unit_id", "geometry"]],
@@ -147,26 +164,59 @@ def calculate_gsi(
         keep_geom_type=True,
     )
 
-    out = u[["unit_id", "unit_area_m2"]].copy()
-
     if intersections.empty:
-        out["building_footprint_area_m2"] = 0.0
-        out["gsi"] = 0.0
-        return out[["unit_id", "building_footprint_area_m2", "gsi"]]
+        for column in diagnostic_columns:
+            out[column] = 0.0
+        out["footprint_overlap_flag"] = False
+        return out.drop(columns=["unit_area_m2"])
 
     intersections["building_area_in_unit_m2"] = intersections.geometry.area
-
-    area_by_unit = (
+    raw = (
         intersections.groupby("unit_id")["building_area_in_unit_m2"]
         .sum()
-        .reset_index(name="building_footprint_area_m2")
+        .reset_index(name="building_footprint_area_raw_sum_m2")
     )
-
-    out = out.merge(area_by_unit, on="unit_id", how="left")
-    out["building_footprint_area_m2"] = out["building_footprint_area_m2"].fillna(0.0)
-    out["gsi"] = out["building_footprint_area_m2"] / out["unit_area_m2"]
-
-    return out[["unit_id", "building_footprint_area_m2", "gsi"]]
+    unioned = intersections[["unit_id", "geometry"]].dissolve(
+        by="unit_id", as_index=False
+    )
+    unioned["building_footprint_union_area_m2"] = unioned.geometry.area
+    out = out.merge(raw, on="unit_id", how="left").merge(
+        unioned[["unit_id", "building_footprint_union_area_m2"]],
+        on="unit_id",
+        how="left",
+    )
+    out["building_footprint_area_raw_sum_m2"] = out[
+        "building_footprint_area_raw_sum_m2"
+    ].fillna(0.0)
+    out["building_footprint_union_area_m2"] = out[
+        "building_footprint_union_area_m2"
+    ].fillna(0.0)
+    out["footprint_overlap_area_m2"] = (
+        out["building_footprint_area_raw_sum_m2"]
+        - out["building_footprint_union_area_m2"]
+    )
+    out.loc[
+        out["footprint_overlap_area_m2"].abs()
+        <= FOOTPRINT_OVERLAP_AREA_TOLERANCE_M2,
+        "footprint_overlap_area_m2",
+    ] = 0.0
+    if (out["footprint_overlap_area_m2"] < -FOOTPRINT_OVERLAP_AREA_TOLERANCE_M2).any():
+        raise RuntimeError("Unioned footprint coverage exceeds raw summed coverage.")
+    out["building_footprint_area_m2"] = out["building_footprint_union_area_m2"]
+    out["gsi"] = out["building_footprint_union_area_m2"] / out["unit_area_m2"]
+    out["gsi_raw_sum"] = (
+        out["building_footprint_area_raw_sum_m2"] / out["unit_area_m2"]
+    )
+    out["gsi_overlap_difference"] = out["gsi_raw_sum"] - out["gsi"]
+    out["footprint_overlap_flag"] = (
+        out["footprint_overlap_area_m2"] > FOOTPRINT_OVERLAP_AREA_TOLERANCE_M2
+    )
+    if (
+        (out["gsi"] < -GSI_NUMERICAL_TOLERANCE)
+        | (out["gsi"] > 1 + GSI_NUMERICAL_TOLERANCE)
+    ).any():
+        raise RuntimeError("Union-based GSI falls outside [0, 1] beyond numerical tolerance.")
+    return out.drop(columns=["unit_area_m2"])
 
 
 def calculate_far_fsi(

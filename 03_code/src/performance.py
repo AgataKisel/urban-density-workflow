@@ -20,7 +20,7 @@ except ImportError:  # pragma: no cover - dependency is present in the project e
     psutil = None
 
 
-INDICATOR_DEFINITION_VERSION = "1"
+INDICATOR_DEFINITION_VERSION = "2"
 CACHE_MANIFEST_VERSION = 2
 
 
