@@ -11,6 +11,9 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 import pandas as pd
+from matplotlib.patches import Patch
+
+from map_styles import color_for_value, legend_entries, resolved_style, style_for_column
 
 
 def _prepare_output_path(output_path: Path) -> Path:
@@ -107,6 +110,10 @@ def plot_indicator_map(
 
     fig, ax = plt.subplots(figsize=figsize)
 
+    shared_style = style_for_column(column)
+    if shared_style is not None:
+        shared_style = resolved_style(shared_style, gdf[column])
+        missing_color = shared_style.missing_color
     valid = gdf[gdf[column].notna()].copy()
     missing = gdf[gdf[column].isna()].copy()
 
@@ -135,6 +142,23 @@ def plot_indicator_map(
             ha="center",
             va="center",
             fontsize=10,
+        )
+    elif shared_style is not None:
+        valid["_map_display_color"] = valid[column].map(
+            lambda value: color_for_value(shared_style, value)
+        )
+        valid.plot(
+            ax=ax,
+            color=valid["_map_display_color"],
+            edgecolor=edgecolor,
+            linewidth=linewidth,
+        )
+        ax.legend(
+            handles=[Patch(facecolor=color, edgecolor="#777777", label=label) for _key, label, color in legend_entries(shared_style)],
+            title=shared_style.public_label,
+            loc="lower left",
+            fontsize=7,
+            title_fontsize=8,
         )
     else:
         valid.plot(
@@ -223,7 +247,7 @@ def plot_gsi_sanity_map(
     figsize: tuple[float, float] = (8, 8),
 ) -> Path | None:
     """
-    Save a diagnostic map highlighting cells where GSI > 1.
+    Save a diagnostic map highlighting cells where raw-sum GSI exceeds 1.
 
     This map is not a primary result map. It is a data-quality / sanity-check
     map used to inspect theoretically suspicious GSI values.
@@ -234,16 +258,17 @@ def plot_gsi_sanity_map(
         logging.warning("Cannot create GSI sanity map: indicator grid is empty.")
         return None
 
-    if "gsi" not in indicator_grid.columns:
-        logging.warning("Cannot create GSI sanity map: gsi column not found.")
+    diagnostic_column = "gsi_raw_sum" if "gsi_raw_sum" in indicator_grid.columns else "gsi"
+    if diagnostic_column not in indicator_grid.columns:
+        logging.warning("Cannot create GSI sanity map: no GSI diagnostic column found.")
         return None
 
     gdf = indicator_grid.copy()
-    gdf["gsi"] = pd.to_numeric(gdf["gsi"], errors="coerce")
+    gdf["gsi_diagnostic"] = pd.to_numeric(gdf[diagnostic_column], errors="coerce")
 
-    suspicious = gdf[gdf["gsi"] > 1].copy()
-    normal = gdf[(gdf["gsi"].notna()) & (gdf["gsi"] <= 1)].copy()
-    missing = gdf[gdf["gsi"].isna()].copy()
+    suspicious = gdf[gdf["gsi_diagnostic"] > 1].copy()
+    normal = gdf[(gdf["gsi_diagnostic"].notna()) & (gdf["gsi_diagnostic"] <= 1)].copy()
+    missing = gdf[gdf["gsi_diagnostic"].isna()].copy()
 
     fig, ax = plt.subplots(figsize=figsize)
 
@@ -282,7 +307,7 @@ def plot_gsi_sanity_map(
             logging.warning("Could not draw AOI boundary on GSI sanity map: %s", exc)
 
     ax.set_title(
-        f"GSI sanity check: cells with GSI > 1\n"
+        f"GSI sanity check: cells with raw-sum GSI > 1\n"
         f"suspicious cells: {len(suspicious)}/{len(gdf)}",
         fontsize=11,
     )

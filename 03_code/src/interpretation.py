@@ -170,18 +170,18 @@ def _gsi_record(summary: dict[str, Any]) -> dict[str, Any]:
     if cells_over_1 is not None and cells_over_1 > 0:
         record["status"] = STATUS_LIMITED
         record["status_reason"] = (
-            f"{cells_over_1} grid cells have GSI greater than 1."
+            f"{cells_over_1} grid cells have raw-sum GSI greater than 1."
         )
         record["key_warnings"].append(
-            "Some grid cells have GSI greater than 1; check overlap or geometry diagnostics."
+            "Some grid cells have raw-sum GSI greater than 1; check overlap or geometry diagnostics."
         )
         record["recommended_use"] = (
-            "Use with caution and review the GSI > 1 diagnostics before thesis interpretation."
+            "Use with caution and review the raw-sum GSI overlap diagnostics before interpretation."
         )
         return record
 
     record["status"] = STATUS_OK
-    record["status_reason"] = "GSI was calculated and no GSI > 1 cells were reported."
+    record["status_reason"] = "GSI was calculated and no raw-sum GSI overlap warning was reported."
     record["recommended_use"] = "Suitable as a primary physical density indicator."
     return record
 

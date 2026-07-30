@@ -262,8 +262,8 @@ def test_user_facing_popup_labels_hide_raw_grid_columns_and_paths(tmp_path):
     )
     html = html_path.read_text(encoding="utf-8")
 
-    assert "Average neighbour distance" in html
-    assert "Average neighbour distance (m)" in html
+    assert "Average nearest-building distance" in html
+    assert "Average nearest-building distance (m)" in html
     assert "Units: metres" in html
     assert "avg_neighbor_distance_m" not in html
     assert str(output_folder) not in html
@@ -296,7 +296,7 @@ def test_indicator_names_and_units_are_user_facing():
     assert INDICATOR_LABELS["gsi"] == "GSI / Building Coverage Ratio"
     assert INDICATOR_LABELS["far"] == "FAR/FSI"
     assert INDICATOR_LABELS["built_volume_density"] == "Built Volume Density"
-    assert INDICATOR_LABELS["neighbour_distance"] == "Average neighbour distance"
+    assert INDICATOR_LABELS["neighbour_distance"] == "Average nearest-building distance"
     assert (
         INDICATOR_LABELS["street_profile_ratio"]
         == "Street-profile height-to-width ratio"
