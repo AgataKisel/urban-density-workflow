@@ -1,6 +1,6 @@
 # v0.2.0 migration
 
-Version 0.2.0 updates reusable workflow behaviour without changing the other indicator formulas or readiness thresholds.
+Version 0.2.0 updates reusable workflow behaviour.
 
 ## Indicator and cache changes
 
