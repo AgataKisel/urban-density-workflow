@@ -19,6 +19,7 @@ import yaml
 CODE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = CODE_DIR.parent
 SCRIPTS_DIR = CODE_DIR / "scripts"
+SRC_DIR = CODE_DIR / "src"
 GENERATED_CONFIG_DIR = CODE_DIR / "config" / "generated"
 OUTPUTS_ROOT = PROJECT_ROOT / "04_outputs"
 
@@ -50,6 +51,8 @@ STREAMLIT_CHROME_CSS = """
 """
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
 from create_config_from_bbox import (  # noqa: E402
     RUN_MODES,
@@ -59,6 +62,15 @@ from create_config_from_bbox import (  # noqa: E402
     validate_run_name,
 )
 from export_web_map import load_grid_layer  # noqa: E402
+from map_styles import (  # noqa: E402
+    CARTOGRAPHIC_STYLE_VERSION,
+    MISSING_COLOR,
+    ZERO_COLOR,
+    color_for_value,
+    legend_entries,
+    resolved_style,
+    style_for_key,
+)
 
 
 MODE_HELP = {
@@ -98,7 +110,7 @@ APP_INDICATORS = {
             "values mean less footprint coverage."
         ),
         "requirements": "Valid building footprints and grid-cell areas.",
-        "limitation": "Overlapping footprints can produce raw values above 1.",
+        "limitation": "The official value unions overlapping footprint coverage; the raw sum remains a diagnostic.",
         "valid_share_column": None,
     },
     "far": {
@@ -130,11 +142,11 @@ APP_INDICATORS = {
         "valid_share_column": "height_valid_area_share",
     },
     "neighbour_distance": {
-        "label": "Average neighbour distance",
+        "label": "Average nearest-building distance",
         "column": "avg_neighbor_distance_m",
         "unit": "m",
         "role": "Contextual morphology indicator",
-        "measures": "Average footprint-to-footprint distance to adjacent buildings.",
+        "measures": "For each building, the nearest other footprint-to-footprint distance, aggregated to grid cells.",
         "higher_lower": (
             "Higher values indicate more spacing between buildings; lower values "
             "indicate more compact or attached fabric."
@@ -1664,18 +1676,14 @@ def create_static_grid_preview(
 
     plot_grid = grid[[column, "geometry"]].copy()
     fig, ax = plt.subplots(figsize=(9, 8), dpi=130)
+    style = resolved_style(style_for_key(indicator), plot_grid[column])
     valid = plot_grid[plot_grid[column].notna()]
     missing = plot_grid[plot_grid[column].isna()]
     if not missing.empty:
-        missing.plot(ax=ax, color="#eeeeee", edgecolor="none")
+        missing.plot(ax=ax, color=style.missing_color, edgecolor="none")
     if not valid.empty:
-        valid.plot(
-            ax=ax,
-            column=column,
-            cmap="viridis",
-            legend=True,
-            linewidth=0,
-        )
+        valid["_style_color"] = valid[column].map(lambda value: color_for_value(style, value))
+        valid.plot(ax=ax, color=valid["_style_color"], linewidth=0)
     ax.set_axis_off()
     ax.set_title(f"{indicator_label(indicator)} preview")
     fig.text(
@@ -2203,7 +2211,6 @@ def create_indicator_overview(
 ) -> dict[str, object]:
     import numpy as np
     import pyogrio
-    from matplotlib import colormaps
     from PIL import Image
     from rasterio.features import rasterize
     from rasterio.transform import from_bounds
@@ -2222,6 +2229,7 @@ def create_indicator_overview(
     # image relative to exact vector cells, especially across a large extent.
     # Reproject the temporary display copy before rasterization instead.
     grid = grid.to_crs("EPSG:4326")
+    style = resolved_style(style_for_key(indicator), grid[column])
     values = _finite_numeric_series(grid[column])
     if values.empty:
         raise ValueError(f"{indicator_label(indicator)} has no valid values.")
@@ -2239,16 +2247,12 @@ def create_indicator_overview(
     vmax = float(values.max())
     span = vmax - vmin
 
+    category_codes = {"missing": 0, "zero": 1}
+    category_codes.update({f"valid_{index}": index + 2 for index in range(len(style.valid_colors))})
+
     def cell_code(raw_value: object) -> int:
-        try:
-            numeric = float(raw_value)
-        except (TypeError, ValueError):
-            return 0
-        if not np.isfinite(numeric):
-            return 0
-        if span <= 0:
-            return 128
-        return int(np.clip(round(1 + 254 * (numeric - vmin) / span), 1, 255))
+        from map_styles import classify_value
+        return category_codes[classify_value(style, raw_value)]
 
     shapes = (
         (geometry, cell_code(value))
@@ -2265,11 +2269,13 @@ def create_indicator_overview(
     rgba = np.zeros((height, width, 4), dtype=np.uint8)
     outside = raster < 0
     missing = raster == 0
-    valid_pixels = raster > 0
-    rgba[missing] = np.array([180, 184, 190, 205], dtype=np.uint8)
-    if valid_pixels.any():
-        normalized = (raster[valid_pixels].astype(float) - 1) / 254
-        rgba[valid_pixels] = (colormaps["viridis"](normalized) * 255).astype(np.uint8)
+    zero = raster == 1
+    rgba[missing] = np.array([217, 217, 217, 205], dtype=np.uint8)
+    rgba[zero] = np.array([251, 251, 247, 255], dtype=np.uint8)
+    for index, color in enumerate(style.valid_colors, start=2):
+        valid_pixels = raster == index
+        if valid_pixels.any():
+            rgba[valid_pixels] = np.array([*bytes.fromhex(color[1:]), 255], dtype=np.uint8)
     rgba[outside] = np.array([0, 0, 0, 0], dtype=np.uint8)
 
     png_path, metadata_path = overview_asset_paths(output_folder, indicator)
@@ -2289,6 +2295,11 @@ def create_indicator_overview(
         "raster_crs": "EPSG:4326",
         "source_modified_ns": path.stat().st_mtime_ns,
         "display_only": True,
+        "cartographic_style_version": CARTOGRAPHIC_STYLE_VERSION,
+        "style_breaks": list(style.fixed_breaks or ()),
+        "style_missing_color": style.missing_color,
+        "style_zero_color": style.zero_color,
+        "style_valid_colors": list(style.valid_colors),
     }
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     return {**metadata, "image_path": png_path}
@@ -2311,19 +2322,9 @@ def ensure_indicator_overview(output_folder: Path, indicator: str) -> dict[str, 
     return create_indicator_overview(output_folder, indicator)
 
 
-def _value_color(value: object, minimum: float, maximum: float) -> str:
-    import numpy as np
-    from matplotlib import colormaps
-    from matplotlib.colors import to_hex
-
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return "#b4b8be"
-    if not np.isfinite(numeric):
-        return "#b4b8be"
-    normalized = 0.5 if maximum <= minimum else (numeric - minimum) / (maximum - minimum)
-    return to_hex(colormaps["viridis"](float(np.clip(normalized, 0, 1))))
+def _value_color(value: object, indicator: str, values: object) -> str:
+    """Return the registry color without altering the scientific value."""
+    return color_for_value(resolved_style(style_for_key(indicator), values), value)
 
 
 def build_results_map(
@@ -2386,7 +2387,7 @@ def build_results_map(
                 value = feature.get("properties", {}).get(label)
                 missing = value is None
                 return {
-                    "fillColor": _value_color(value, minimum, maximum),
+                    "fillColor": _value_color(value, indicator, detail[column]),
                     "color": "#374151" if not missing else "#6b7280",
                     "weight": 0.7,
                     "fillOpacity": 0.72 if not missing else 0.45,
@@ -2573,6 +2574,7 @@ def initialize_dashboard_state(session_state: object) -> None:
     defaults = {
         "setup_run_name": "",
         "selected_completed_run": None,
+        "_active_completed_run": None,
         "selected_indicator": "gsi",
         "selected_cell_id": None,
         "selected_click_coordinates": None,
@@ -2592,9 +2594,57 @@ def initialize_dashboard_state(session_state: object) -> None:
         "setup_selection_mode": "Draw rectangle on map",
         "dashboard_grid_size": 100.0,
         "dashboard_mode": "quick_2d",
+        "_pending_selected_run": None,
+        "_pending_selected_indicator": None,
+        "_pending_page": None,
+        "_pending_reset_selected_cell": False,
+        "_pending_navigation_token": None,
     }
     for key, value in defaults.items():
         session_state.setdefault(key, value)
+
+
+def schedule_navigation(
+    session_state: object,
+    run_name: str | None,
+    indicator: str | None = "gsi",
+    page: str | None = "Results map",
+) -> None:
+    """Store one navigation request without touching widget-bound keys late."""
+    session_state["_pending_selected_run"] = run_name
+    session_state["_pending_selected_indicator"] = indicator
+    session_state["_pending_page"] = page
+    session_state["_pending_reset_selected_cell"] = True
+    session_state["_pending_navigation_token"] = f"{run_name}:{indicator}:{page}"
+
+
+def apply_pending_navigation_before_widgets(session_state: object) -> bool:
+    """Apply and clear a one-shot request before Streamlit instantiates widgets."""
+    token = session_state.get("_pending_navigation_token")
+    if not token:
+        return False
+    pending_run = session_state.get("_pending_selected_run")
+    pending_indicator = session_state.get("_pending_selected_indicator")
+    pending_page = session_state.get("_pending_page")
+    if pending_run is not None:
+        session_state["selected_completed_run"] = pending_run
+        session_state["_active_completed_run"] = pending_run
+    if pending_indicator is not None:
+        session_state["selected_indicator"] = pending_indicator
+    if pending_page is not None:
+        session_state["active_page"] = pending_page
+    if session_state.get("_pending_reset_selected_cell"):
+        session_state["selected_cell_id"] = None
+        session_state["selected_click_coordinates"] = None
+    for key in (
+        "_pending_selected_run",
+        "_pending_selected_indicator",
+        "_pending_page",
+        "_pending_reset_selected_cell",
+        "_pending_navigation_token",
+    ):
+        session_state[key] = False if key == "_pending_reset_selected_cell" else None
+    return True
 
 
 def safe_output_folder_for_run(
@@ -2629,12 +2679,9 @@ def completed_run_names(outputs_root: Path = OUTPUTS_ROOT) -> list[str]:
 
 def select_completed_run(session_state: object, run_name: str | None) -> bool:
     normalized = str(run_name).strip() if run_name else None
-    changed = session_state.get("selected_completed_run") != normalized
+    changed = session_state.get("_active_completed_run") != normalized
     if changed:
-        session_state["selected_completed_run"] = normalized
-        session_state["selected_cell_id"] = None
-        session_state["selected_click_coordinates"] = None
-        session_state["selected_indicator"] = "gsi"
+        schedule_navigation(session_state, normalized)
     return changed
 
 
@@ -2853,13 +2900,12 @@ def _render_analysis_setup(st: object, components: object, st_folium: object | N
 
 
 def _render_indicator_legend(st: object, overview: dict[str, object], indicator: str) -> None:
-    minimum = format_indicator_value(overview.get("value_min"), indicator)
-    maximum = format_indicator_value(overview.get("value_max"), indicator)
-    st.markdown(
-        "<div style='height:12px;background:linear-gradient(90deg,#440154,#31688e,#35b779,#fde725);'></div>",
-        unsafe_allow_html=True,
+    style = resolved_style(style_for_key(indicator), [overview.get("value_min"), overview.get("value_max")])
+    chips = " ".join(
+        f"<span style='display:inline-block;margin-right:8px'><span style='display:inline-block;width:12px;height:12px;border:1px solid #777;background:{color};vertical-align:middle'></span> {escape(label)}</span>"
+        for _key, label, color in legend_entries(style)
     )
-    st.caption(f"{minimum} (lower) to {maximum} (higher) | Grey/dashed cells: missing input data")
+    st.markdown(chips, unsafe_allow_html=True)
 
 
 def _render_aoi_summary(st: object, summary: dict[str, object]) -> None:
@@ -3001,8 +3047,11 @@ def _render_results_map(st: object, st_folium: object | None) -> None:
         runs,
         index=runs.index(current_run) if current_run in runs else None,
         placeholder="Choose a completed analysis",
+        key="selected_completed_run",
     )
-    select_completed_run(st.session_state, selected_run)
+    if select_completed_run(st.session_state, selected_run):
+        st.rerun()
+        return
     if selected_run is None:
         st.info("Choose a completed analysis to view its map and results.")
         return
@@ -3021,7 +3070,13 @@ def _render_results_map(st: object, st_folium: object | None) -> None:
         st.error("No mapped indicators are available for this completed analysis.")
         return
     if st.session_state.get("selected_indicator") not in available:
-        st.session_state["selected_indicator"] = "gsi" if "gsi" in available else available[0]
+        schedule_navigation(
+            st.session_state,
+            selected_run,
+            indicator="gsi" if "gsi" in available else available[0],
+        )
+        st.rerun()
+        return
     indicator = st.selectbox(
         "Indicator",
         available,
@@ -3134,6 +3189,7 @@ def main() -> None:
     )
     st.markdown(STREAMLIT_CHROME_CSS, unsafe_allow_html=True)
     _initialize_dashboard_state(st)
+    apply_pending_navigation_before_widgets(st.session_state)
     st.title("Urban Density Analysis")
     st.caption(
         "Local research dashboard for physical urban density and contextual morphology. "

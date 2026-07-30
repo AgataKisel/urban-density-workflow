@@ -149,7 +149,8 @@ def build_config(
         },
         "data_source": {
             "type": "overture",
-            "release": "2026-06-17.0",
+            "overture_release": "auto",
+            "release": "auto",
             "provider": "aws",
             "exclude_underground": True,
         },

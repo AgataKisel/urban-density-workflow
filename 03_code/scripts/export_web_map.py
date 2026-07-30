@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,12 @@ import folium
 import geopandas as gpd
 import pandas as pd
 from branca.element import Element
+
+SRC_DIR = Path(__file__).resolve().parents[1] / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from map_styles import color_for_value, legend_entries, resolved_style, style_for_column, style_for_key
 
 
 INDICATOR_COLUMNS = {
@@ -23,7 +30,7 @@ INDICATOR_LABELS = {
     "gsi": "GSI / Building Coverage Ratio",
     "far": "FAR/FSI",
     "built_volume_density": "Built Volume Density",
-    "neighbour_distance": "Average neighbour distance",
+    "neighbour_distance": "Average nearest-building distance",
     "street_profile_ratio": "Street-profile height-to-width ratio",
 }
 
@@ -39,7 +46,7 @@ FIELD_LABELS = {
     "gsi": "GSI / Building Coverage Ratio",
     "far_fsi": "FAR/FSI",
     "built_volume_density": "Built Volume Density",
-    "avg_neighbor_distance_m": "Average neighbour distance (m)",
+    "avg_neighbor_distance_m": "Average nearest-building distance (m)",
     "avg_street_profile_height_to_width_ratio_strict": (
         "Street-profile height-to-width ratio"
     ),
@@ -171,10 +178,13 @@ def _safe_numeric_series(gdf: gpd.GeoDataFrame, column: str) -> pd.Series:
     return pd.to_numeric(gdf[column], errors="coerce")
 
 
-def _color_for_value(value: Any, min_value: float, max_value: float) -> str:
+def _color_for_value(value: Any, min_value: float, max_value: float, indicator_column: str) -> str:
+    style = style_for_column(indicator_column)
+    if style is not None:
+        return color_for_value(resolved_style(style, [min_value, max_value]), value)
     numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
     if pd.isna(numeric):
-        return "#bdbdbd"
+        return "#d9d9d9"
     if max_value <= min_value:
         ratio = 0.5
     else:
@@ -277,7 +287,7 @@ def _add_grid_layer(
         return {
             "color": "#222222",
             "weight": 0.7,
-            "fillColor": _color_for_value(value, min_value, max_value),
+            "fillColor": _color_for_value(value, min_value, max_value, indicator_column),
             "fillOpacity": 0.45,
             "className": "grid-indicator-layer",
         }
@@ -332,11 +342,9 @@ def _caption_html(
         f"<strong>{html.escape(indicator_label)}</strong><br>"
         f"Run: {html.escape(run_label)}<br>"
         f"Units: {html.escape(indicator_unit)}<br>"
-        f"Visual range: {min_value:.4g} to {max_value:.4g}<br>"
-        "Legend range is scaled for this map; colours should not be compared "
-        "directly with independently scaled maps.<br>"
-        "Grid fill uses a simple continuous min/max colour ramp, not scientific "
-        "classification thresholds."
+        f"Display extent: {min_value:.4g} to {max_value:.4g}<br>"
+        "Legend range is scaled for this map when configured or run-derived breaks are used.<br>"
+        "Grey is missing or insufficient input; near-white is a true zero."
         f"{missing_note}"
         "</div>"
     )
@@ -415,7 +423,8 @@ def build_web_map(
         warnings.append(OSM_LOCAL_FILE_WARNING)
 
     indicator_column = INDICATOR_COLUMNS[indicator]
-    indicator_label = INDICATOR_LABELS[indicator]
+    shared_style = style_for_key(indicator)
+    indicator_label = shared_style.public_label
     indicator_unit = INDICATOR_UNITS[indicator]
 
     if indicator_column not in grid.columns:
