@@ -23,6 +23,7 @@ from run_workflow import (  # noqa: E402
     validate_raw_buildings_match_aoi,
     write_cache_manifest,
 )
+from cache_contracts import compare_artifact_contracts, contract_is_compatible  # noqa: E402
 
 
 def _inputs():
@@ -148,4 +149,25 @@ def test_overwrite_removes_run_but_protects_global_cache(tmp_path, monkeypatch):
     else:
         raise AssertionError("Global cache deletion should be refused")
     assert global_cache.exists()
+
+
+def test_artifact_contracts_keep_clean_buildings_reusable_after_height_change():
+    config, aoi, buildings = _inputs()
+    source = build_cache_manifest(config, aoi, "EPSG:32631", buildings, buildings, buildings.copy())
+    changed = dict(config)
+    changed["height_enrichment"] = {**config["height_enrichment"], "min_overlap_share": 0.5}
+    current = build_cache_manifest(changed, aoi, "EPSG:32631", buildings, buildings, buildings.copy())
+    plan = compare_artifact_contracts(current, source)
+    assert contract_is_compatible(plan, "building_core")
+    assert not contract_is_compatible(plan, "enriched_buildings")
+
+
+def test_manifest_keeps_distinct_clean_and_enriched_physical_hashes():
+    config, aoi, clean = _inputs()
+    enriched = clean.copy()
+    enriched["height_source"] = ["gba"]
+    enriched["height_m"] = [18.0]
+    manifest = build_cache_manifest(config, aoi, "EPSG:32631", clean, clean, enriched)
+    hashes = manifest["artifact_layer_hashes"]
+    assert hashes["buildings_clean"] != hashes["buildings_height_enriched"]
 

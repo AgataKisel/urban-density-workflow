@@ -5,6 +5,8 @@ import math
 import geopandas as gpd
 from shapely.geometry import box
 
+from spatial_identity import CANONICAL_GRID_ID_CONVENTION, attach_canonical_grid_ids
+
 
 def _validate_projected_aoi(aoi: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """
@@ -46,6 +48,7 @@ def create_grid(
     cell_size_m: int,
     clip_to_aoi: bool = True,
     max_cells: int = 200_000,
+    grid_id_convention: str = CANONICAL_GRID_ID_CONVENTION,
 ) -> gpd.GeoDataFrame:
     """
     Create a regular square aggregation grid for an AOI.
@@ -98,7 +101,7 @@ def create_grid(
             "Increase cell_size_m or use a smaller AOI."
         )
 
-    geometries = []
+    cells = []
 
     for col in range(n_cols):
         x0 = minx + col * cell_size_m
@@ -108,10 +111,10 @@ def create_grid(
             y0 = miny + row * cell_size_m
             y1 = y0 + cell_size_m
 
-            geometries.append(box(x0, y0, x1, y1))
+            cells.append({"row_index": row, "column_index": col, "geometry": box(x0, y0, x1, y1)})
 
     grid = gpd.GeoDataFrame(
-        geometry=geometries,
+        cells,
         crs=aoi_clean.crs,
     )
 
@@ -141,7 +144,17 @@ def create_grid(
     grid = grid[grid.geometry.geom_type.isin(["Polygon", "MultiPolygon"])]
     grid = grid.reset_index(drop=True)
 
-    grid["unit_id"] = [f"cell_{i:05d}" for i in range(1, len(grid) + 1)]
+    if grid_id_convention == CANONICAL_GRID_ID_CONVENTION:
+        grid = attach_canonical_grid_ids(
+            grid,
+            origin_x=minx,
+            origin_y=miny,
+            cell_size_m=cell_size_m,
+        )
+    elif grid_id_convention == "legacy_cell_sequence":
+        grid["unit_id"] = [f"cell_{i:05d}" for i in range(1, len(grid) + 1)]
+    else:
+        raise ValueError(f"Unsupported grid ID convention: {grid_id_convention}")
     grid["cell_size_m"] = cell_size_m
     grid["unit_area_m2"] = grid.geometry.area
 
@@ -150,7 +163,7 @@ def create_grid(
 
     grid = grid[
         [
-            "unit_id",
+            "unit_id", "row_index", "column_index",
             "cell_size_m",
             "unit_area_m2",
             "is_partial_cell",

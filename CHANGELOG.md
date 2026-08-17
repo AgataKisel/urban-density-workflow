@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.3.0
+
+- Adds artifact-aware cache contracts for compatible reuse of preprocessing,
+  height-enrichment, neighbour, grid, and street-context artifacts.
+- Records separate stable physical hashes for cleaned and height-enriched
+  building layers; incompatible enriched layers cannot be reused as cleaned
+  building inputs.
+- Adds canonical metric AOI and regular-grid identities, including stable
+  row/column identifiers assigned before edge clipping.
+- Records provenance for OSMnx street acquisition, including explicit endpoint
+  selection when supplied. Failed queries do not silently fall back.
+- Preserves the v0.2 scientific indicator definitions and readiness semantics.
+
 ## v0.2.0
 
 - Makes official GSI union-based: overlapping footprint coverage is counted once.
