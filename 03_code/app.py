@@ -940,6 +940,7 @@ def grid_rerun_cache_compatibility(
         "network_type": street.get("network_type"),
         "distance_m": street.get("distance_m"),
         "tick_length_m": street.get("tick_length_m"),
+        "topology_rule_version": street.get("topology_rule_version", 1),
     }
     if expected_street != manifest.get("street_context"):
         reasons.append("Street-context settings differ.")
@@ -3008,8 +3009,10 @@ def _render_grid_size_rerun(st: object, source_run: str, source_output: Path) ->
 
         with st.status("Recalculating the grid...", expanded=True) as status_box:
             status_box.write("Reusing prepared building data")
-            if indicators.get("neighbor_distance") or street.get("enabled"):
-                status_box.write("Reusing contextual calculations")
+            if indicators.get("neighbor_distance"):
+                status_box.write("Reusing building-level neighbour context")
+            if street.get("enabled"):
+                status_box.write("Reusing building-level street-profile context")
             status_box.write(f"Creating {new_size:g} m grid")
             status_box.write("Aggregating indicators")
             result = run_command(build_workflow_command(config_path))

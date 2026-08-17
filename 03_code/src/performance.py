@@ -25,6 +25,7 @@ INDICATOR_DEFINITION_VERSION = "2"
 # hashes. Earlier manifests remain readable but are not eligible for new
 # cross-run artifact reuse.
 CACHE_MANIFEST_VERSION = 4
+ARTIFACT_HASH_ALGORITHM = "semantic_geodataframe_v2"
 
 
 def _json_hash(value: Any) -> str:
@@ -32,12 +33,14 @@ def _json_hash(value: Any) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def stable_geodataframe_hash(
+def _hash_geodataframe(
     frame: gpd.GeoDataFrame,
     id_column: str | None = None,
     attribute_columns: list[str] | None = None,
+    *,
+    semantic: bool,
 ) -> str:
-    """Hash IDs, selected attributes, CRS, and normalized geometry deterministically."""
+    """Hash IDs, selected attributes, CRS, and geometry deterministically."""
     if frame.crs is None:
         raise ValueError("Cannot hash a GeoDataFrame without a CRS.")
 
@@ -59,6 +62,17 @@ def stable_geodataframe_hash(
     digest.update(crs_identity.encode("utf-8"))
     digest.update("|".join(columns).encode("utf-8"))
 
+    if semantic and value_columns:
+        # GeoPackage represents nullable integer fields as floating point on
+        # read-back. Normalize numeric values and categorical values before
+        # hashing so storage dtype changes do not invalidate the same artifact.
+        for column in value_columns:
+            series = working[column]
+            if pd.api.types.is_numeric_dtype(series) and not pd.api.types.is_bool_dtype(series):
+                working[column] = pd.to_numeric(series, errors="coerce").astype("float64")
+            else:
+                working[column] = series.astype("string").fillna("<missing>")
+
     chunk_size = 10_000
     for start in range(0, len(working), chunk_size):
         chunk = working.iloc[start : start + chunk_size]
@@ -69,7 +83,8 @@ def stable_geodataframe_hash(
                 categorize=False,
             ).to_numpy(dtype="uint64", copy=False)
             digest.update(value_hashes.tobytes())
-        geometry_wkb = chunk.geometry.to_wkb(byte_order=1)
+        geometry = shapely.normalize(chunk.geometry.array) if semantic else chunk.geometry.array
+        geometry_wkb = shapely.to_wkb(geometry, byte_order=1)
         digest.update(
             b"".join(
                 len(value or b"").to_bytes(8, "little") + (value or b"")
@@ -78,6 +93,49 @@ def stable_geodataframe_hash(
         )
 
     return digest.hexdigest()
+
+
+def stable_geodataframe_hash(
+    frame: gpd.GeoDataFrame,
+    id_column: str | None = None,
+    attribute_columns: list[str] | None = None,
+) -> str:
+    """Hash semantic artifact content across supported storage round trips."""
+    return _hash_geodataframe(
+        frame, id_column=id_column, attribute_columns=attribute_columns, semantic=True
+    )
+
+
+def legacy_stable_geodataframe_hash(
+    frame: gpd.GeoDataFrame,
+    id_column: str | None = None,
+    attribute_columns: list[str] | None = None,
+) -> str:
+    """Reproduce the v0.3.0 dtype-sensitive hash for verified migration only."""
+    return _hash_geodataframe(
+        frame, id_column=id_column, attribute_columns=attribute_columns, semantic=False
+    )
+
+
+def legacy_storage_compatible_hashes(
+    frame: gpd.GeoDataFrame,
+    id_column: str | None = None,
+    attribute_columns: list[str] | None = None,
+) -> set[str]:
+    """Return strict legacy candidates for known GeoPackage nullable-integer coercion."""
+    columns = list(attribute_columns or [])
+    candidates = {legacy_stable_geodataframe_hash(frame, id_column, columns)}
+    normalized = frame.copy()
+    changed = False
+    for column in columns:
+        values = pd.to_numeric(normalized[column], errors="coerce")
+        finite = values.dropna()
+        if not finite.empty and ((finite % 1) == 0).all():
+            normalized[column] = values.astype("Int64")
+            changed = True
+    if changed:
+        candidates.add(legacy_stable_geodataframe_hash(normalized, id_column, columns))
+    return candidates
 
 
 def cache_signature(

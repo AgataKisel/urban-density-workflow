@@ -143,7 +143,7 @@ The Streamlit application can recalculate a selected completed analysis at anoth
 
 ## Reuse and provenance
 
-Version 0.3.0 records independent compatibility contracts for cleaned
+Version 0.3.1 records independent compatibility contracts for cleaned
 buildings, height-enriched buildings, neighbour context, grids, and street
 context. This permits a later contextual run to reuse compatible upstream
 artifacts while recalculating only the newly requested context. Cleaned and
