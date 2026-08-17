@@ -21,7 +21,10 @@ except ImportError:  # pragma: no cover - dependency is present in the project e
 
 
 INDICATOR_DEFINITION_VERSION = "2"
-CACHE_MANIFEST_VERSION = 2
+# Version 4 introduces artifact-specific contracts and separate physical layer
+# hashes. Earlier manifests remain readable but are not eligible for new
+# cross-run artifact reuse.
+CACHE_MANIFEST_VERSION = 4
 
 
 def _json_hash(value: Any) -> str:

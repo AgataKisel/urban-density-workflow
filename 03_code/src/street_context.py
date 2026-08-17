@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 import shapely
 
+from osm_street_acquisition import acquire_osmnx_street_edges
+
 
 # This numerical tolerance rejects floating-point residues. It is not a
 # physical minimum street width.
@@ -160,43 +162,23 @@ def fetch_streets_from_osmnx(
     aoi: gpd.GeoDataFrame,
     network_type: str = "drive",
     target_crs: Any | None = None,
-) -> gpd.GeoDataFrame:
+    acquisition_config: dict[str, Any] | None = None,
+    query_context: dict[str, Any] | None = None,
+    return_provenance: bool = False,
+) -> gpd.GeoDataFrame | tuple[gpd.GeoDataFrame, dict[str, Any]]:
     """
     Fetch street centerlines from OpenStreetMap using OSMnx.
     """
-    import osmnx as ox
-
-    if aoi.empty:
-        raise ValueError("AOI is empty.")
-
-    if aoi.crs is None:
-        raise ValueError("AOI has no CRS.")
-
     if target_crs is None:
         target_crs = aoi.crs
-
-    aoi_wgs84 = aoi.to_crs("EPSG:4326")
-
-    try:
-        aoi_polygon = aoi_wgs84.geometry.union_all()
-    except AttributeError:
-        aoi_polygon = aoi_wgs84.unary_union
-
     logging.info("Fetching OSMnx street network. network_type=%s", network_type)
-
-    graph = ox.graph_from_polygon(
-        aoi_polygon,
+    edges, provenance = acquire_osmnx_street_edges(
+        aoi,
         network_type=network_type,
-        simplify=True,
-        retain_all=False,
-        truncate_by_edge=True,
+        acquisition_config=acquisition_config,
+        target_crs=target_crs,
+        query_context=query_context,
     )
-
-    edges = ox.graph_to_gdfs(
-        graph,
-        nodes=False,
-        edges=True,
-    ).reset_index()
 
     streets = edges.copy()
 
@@ -227,7 +209,11 @@ def fetch_streets_from_osmnx(
 
     logging.info("Fetched street segments: %s", len(streets))
 
-    return streets
+    provenance["street_row_count"] = int(len(streets))
+    provenance["geometry_type_counts"] = {
+        str(key): int(value) for key, value in streets.geometry.geom_type.value_counts().items()
+    }
+    return (streets, provenance) if return_provenance else streets
 
 
 def calculate_street_profile_segments(

@@ -62,6 +62,18 @@ from quality import (
     summarize_unit_quality,
 )
 from aggregation import create_grid
+from cache_contracts import (
+    artifact_contract_signature,
+    compare_artifact_contracts,
+    contract_is_compatible,
+    refresh_artifact_contracts,
+)
+from spatial_identity import (
+    CANONICAL_GRID_ID_CONVENTION,
+    acquisition_query_wgs84_identity,
+    canonical_grid_identity,
+    canonical_metric_aoi_identity,
+)
 from indicators import (
     run_indicators,
     calculate_building_neighbor_diagnostics,
@@ -512,6 +524,13 @@ def _cache_relevant_settings(config: dict[str, Any]) -> dict[str, Any]:
             "network_type": street_cfg.get("network_type"),
             "distance_m": street_cfg.get("distance_m"),
             "tick_length_m": street_cfg.get("tick_length_m"),
+            "topology_rule_version": street_cfg.get("topology_rule_version", 1),
+        },
+        "aggregation": {
+            "method": config.get("aggregation", {}).get("method", "regular_grid"),
+            "cell_size_m": config.get("aggregation", {}).get("cell_size_m"),
+            "clip_to_aoi": bool(config.get("aggregation", {}).get("clip_to_aoi", True)),
+            "grid_id_convention": config.get("aggregation", {}).get("grid_id_convention", CANONICAL_GRID_ID_CONVENTION),
         },
         "processing_mode": crs_cfg.get("processing_mode", "single_crs"),
         "indicator_definition_version": INDICATOR_DEFINITION_VERSION,
@@ -522,8 +541,9 @@ def build_cache_manifest(
     config: dict[str, Any],
     aoi: gpd.GeoDataFrame,
     target_crs: Any,
-    buildings_clean: gpd.GeoDataFrame,
+    buildings_clean: gpd.GeoDataFrame | None,
     buildings_raw: gpd.GeoDataFrame | None = None,
+    buildings_height_enriched: gpd.GeoDataFrame | None = None,
     created_at: str | None = None,
 ) -> dict[str, Any]:
     """
@@ -542,7 +562,11 @@ def build_cache_manifest(
         "aoi_name": aoi_cfg.get("name"),
         "aoi_identifier": aoi_cfg.get("id", aoi_cfg.get("name")),
         "target_metric_crs": str(target_crs),
-        "building_count_after_preprocessing_enrichment": int(len(buildings_clean)),
+        "building_count_after_preprocessing_enrichment": int(
+            len(buildings_height_enriched)
+            if buildings_height_enriched is not None
+            else (len(buildings_clean) if buildings_clean is not None else 0)
+        ),
         "raw_building_count": (
             int(len(buildings_raw)) if buildings_raw is not None else None
         ),
@@ -553,19 +577,21 @@ def build_cache_manifest(
         ),
     }
     manifest.update(aoi_identity)
+    manifest.update(canonical_metric_aoi_identity(aoi, target_crs))
+    manifest.update(acquisition_query_wgs84_identity(aoi))
     manifest.update(_cache_relevant_settings(config))
 
-    clean_hash_columns = [
-        column
-        for column in ["height_m", "num_floors", "height_source"]
-        if column in buildings_clean.columns
-    ]
+    def building_hash(frame: gpd.GeoDataFrame | None) -> str | None:
+        if frame is None:
+            return None
+        return stable_geodataframe_hash(
+            frame,
+            id_column="building_id" if "building_id" in frame.columns else None,
+            attribute_columns=[column for column in ["height_m", "num_floors", "height_source"] if column in frame.columns],
+        )
     manifest["input_layer_hashes"] = {
-        "buildings_clean_or_enriched": stable_geodataframe_hash(
-            buildings_clean,
-            id_column="building_id" if "building_id" in buildings_clean.columns else None,
-            attribute_columns=clean_hash_columns,
-        ),
+        "buildings_clean": building_hash(buildings_clean),
+        "buildings_height_enriched": building_hash(buildings_height_enriched),
         "buildings_raw": (
             stable_geodataframe_hash(
                 buildings_raw,
@@ -580,6 +606,8 @@ def build_cache_manifest(
             else None
         ),
     }
+    manifest["artifact_layer_hashes"] = dict(manifest["input_layer_hashes"])
+    refresh_artifact_contracts(manifest)
 
     return manifest
 
@@ -658,6 +686,24 @@ def write_cache_manifest(path: Path, manifest: dict[str, Any]) -> None:
         json.dumps(make_json_serializable(manifest), indent=2),
         encoding="utf-8",
     )
+
+
+def verify_cached_building_artifact_hash(
+    buildings: gpd.GeoDataFrame,
+    source_manifest: dict[str, Any] | None,
+    artifact_name: str,
+) -> None:
+    """Prove that a loaded physical building layer matches its manifest."""
+    expected = ((source_manifest or {}).get("artifact_layer_hashes") or {}).get(artifact_name)
+    if not expected:
+        raise ValueError(f"Artifact-aware `{artifact_name}` cache is missing its stable layer hash.")
+    actual = stable_geodataframe_hash(
+        buildings,
+        id_column="building_id" if "building_id" in buildings.columns else None,
+        attribute_columns=[column for column in ["height_m", "num_floors", "height_source"] if column in buildings.columns],
+    )
+    if actual != expected:
+        raise ValueError(f"Cached `{artifact_name}` artifact hash differs from its compatibility manifest.")
 
 
 def evaluate_raw_building_cache(
@@ -2440,6 +2486,7 @@ def run_workflow(config_path: Path) -> None:
         yaml.safe_dump(config, sort_keys=False), encoding="utf-8"
     )
 
+
     # 1. AOI
     stage_start = time.perf_counter()
     logging.info("Creating/loading AOI.")
@@ -2511,9 +2558,12 @@ def run_workflow(config_path: Path) -> None:
         requested_target_crs = estimate_metric_crs(aoi)
     cache_request_manifest = {
         **_aoi_cache_identity(aoi),
+        **canonical_metric_aoi_identity(aoi, requested_target_crs),
+        **acquisition_query_wgs84_identity(aoi),
         **_cache_relevant_settings(config),
         "target_metric_crs": str(requested_target_crs),
     }
+    refresh_artifact_contracts(cache_request_manifest)
     (
         source_cache_manifest,
         source_cache_manifest_found,
@@ -2525,10 +2575,17 @@ def run_workflow(config_path: Path) -> None:
         current_manifest=cache_request_manifest,
         source_manifest=source_cache_manifest,
     )
-    compatible_stage_cache = (
-        preflight_cache_compatibility["cache_source_compatibility_status"]
-        == "compatible"
+    artifact_cache_plan = compare_artifact_contracts(
+        current_manifest=cache_request_manifest,
+        source_manifest=source_cache_manifest,
     )
+    compatible_building_core_cache = contract_is_compatible(artifact_cache_plan, "building_core")
+    compatible_enriched_building_cache = contract_is_compatible(artifact_cache_plan, "enriched_buildings")
+    compatible_neighbor_cache = contract_is_compatible(artifact_cache_plan, "neighbor_context")
+    compatible_grid_cache = contract_is_compatible(artifact_cache_plan, "canonical_grid")
+    compatible_street_network_cache = contract_is_compatible(artifact_cache_plan, "street_network")
+    compatible_street_profiles_cache = contract_is_compatible(artifact_cache_plan, "street_profiles")
+    compatible_street_assignment_cache = contract_is_compatible(artifact_cache_plan, "street_assignments")
     stage_signature_hash = hashlib.sha256(
         json.dumps(
             cache_request_manifest,
@@ -2776,21 +2833,21 @@ def run_workflow(config_path: Path) -> None:
     used_cached_enriched_buildings = should_use_cached_enriched_buildings(
         cache_config=cache_config,
         cached_enriched_buildings_path=cached_enriched_buildings_path,
-    ) and compatible_stage_cache
+    ) and compatible_enriched_building_cache
     used_cached_cleaned_buildings = (
         not used_cached_enriched_buildings
         and should_use_cached_cleaned_buildings(
             cache_config=cache_config,
             cached_cleaned_buildings_path=cached_cleaned_buildings_path,
         )
-        and compatible_stage_cache
+        and compatible_building_core_cache
     )
     if (
         should_use_cached_enriched_buildings(
             cache_config=cache_config,
             cached_enriched_buildings_path=cached_enriched_buildings_path,
         )
-        and not compatible_stage_cache
+        and not compatible_enriched_building_cache
     ):
         logging.warning(
             "Enriched-building cache rejected: %s",
@@ -2801,7 +2858,7 @@ def run_workflow(config_path: Path) -> None:
             cache_config=cache_config,
             cached_cleaned_buildings_path=cached_cleaned_buildings_path,
         )
-        and not compatible_stage_cache
+        and not compatible_building_core_cache
     ):
         logging.warning(
             "Cleaned-building cache rejected: %s",
@@ -2809,6 +2866,7 @@ def run_workflow(config_path: Path) -> None:
         )
     height_enrichment_summary = None
     cached_height_enrichment_metadata_loaded = False
+    buildings_clean_pre_enrichment: gpd.GeoDataFrame | None = None
 
     if used_cached_enriched_buildings:
         logging.info(
@@ -2821,6 +2879,9 @@ def run_workflow(config_path: Path) -> None:
             layer="buildings_height_enriched",
         )
         buildings_clean = restore_singlepart_polygon_types(buildings_clean)
+        verify_cached_building_artifact_hash(
+            buildings_clean, source_cache_manifest, "buildings_height_enriched"
+        )
 
         if buildings_clean.crs is None:
             raise ValueError(
@@ -2925,6 +2986,10 @@ def run_workflow(config_path: Path) -> None:
                 layer="buildings_clean",
             )
             buildings_clean = restore_singlepart_polygon_types(buildings_clean)
+            verify_cached_building_artifact_hash(
+                buildings_clean, source_cache_manifest, "buildings_clean"
+            )
+            buildings_clean_pre_enrichment = buildings_clean.copy()
             if buildings_clean.crs is None:
                 raise ValueError(
                     "Cached cleaned buildings have no CRS: "
@@ -3083,6 +3148,7 @@ def run_workflow(config_path: Path) -> None:
                 buildings_clean = clip_buildings_to_aoi(buildings_clean, aoi_metric)
             logging.info("Adding footprint area.")
             buildings_clean = add_footprint_area(buildings_clean)
+            buildings_clean_pre_enrichment = buildings_clean.copy()
             logging.info(
                 "Processed buildings ready. CRS=%s, features=%s",
                 buildings_clean.crs,
@@ -3213,8 +3279,11 @@ def run_workflow(config_path: Path) -> None:
         config=config,
         aoi=aoi,
         target_crs=target_crs,
-        buildings_clean=buildings_clean,
+        buildings_clean=buildings_clean_pre_enrichment,
         buildings_raw=buildings_raw if "buildings_raw" in locals() else None,
+        buildings_height_enriched=(
+            buildings_clean if config.get("height_enrichment", {}).get("enabled", False) else None
+        ),
     )
 
     source_cache_manifest = None
@@ -3227,31 +3296,22 @@ def run_workflow(config_path: Path) -> None:
         ) = load_cache_manifest_with_legacy_metadata(
             cache_source_output_dir
         )
-        comparison_current_manifest = dict(current_cache_manifest)
-        comparison_source_manifest = dict(source_cache_manifest or {})
-        if used_cached_enriched_buildings or used_cached_cleaned_buildings:
-            # A GeoPackage round trip can change pandas dtype representation and
-            # therefore a dataframe hash, despite loading the exact recorded
-            # source artifact. The source manifest remains authoritative when
-            # the compatible prepared layer itself was reused.
-            comparison_current_manifest["input_layer_hashes"] = dict(
-                comparison_source_manifest.get("input_layer_hashes", {})
-            )
-        else:
-            comparison_current_manifest["input_layer_hashes"] = {
-                "buildings_raw": current_cache_manifest.get(
-                    "input_layer_hashes", {}
-                ).get("buildings_raw")
-            }
-            comparison_source_manifest["input_layer_hashes"] = {
-                "buildings_raw": (source_cache_manifest or {}).get(
-                    "input_layer_hashes", {}
-                ).get("buildings_raw")
-            }
-        cache_compatibility = compare_cache_manifests(
-            current_manifest=comparison_current_manifest,
-            source_manifest=comparison_source_manifest,
+        artifact_cache_plan = compare_artifact_contracts(
+            current_manifest=current_cache_manifest,
+            source_manifest=source_cache_manifest,
         )
+        used_artifacts = (["enriched_buildings"] if used_cached_enriched_buildings else
+                          ["building_core"] if used_cached_cleaned_buildings else [])
+        cache_compatibility = {
+            "cache_source_manifest_found": bool(source_cache_manifest),
+            "cache_source_compatibility_status": "compatible" if all(
+                contract_is_compatible(artifact_cache_plan, name) for name in used_artifacts
+            ) else "mismatch_detected",
+            "cache_source_compatibility_warnings": [reason for name in used_artifacts for reason in artifact_cache_plan[name]["reasons"]],
+            "cache_source_aoi_hash": (source_cache_manifest or {}).get("canonical_aoi_metric_hash"),
+            "current_aoi_hash": current_cache_manifest.get("canonical_aoi_metric_hash"),
+            "artifact_cache_plan": artifact_cache_plan,
+        }
     else:
         cache_compatibility = {
             "cache_source_manifest_found": False,
@@ -3281,17 +3341,24 @@ def run_workflow(config_path: Path) -> None:
         )
 
     if config.get("outputs", {}).get("save_processed_buildings", True):
-        if research_mode:
-            buildings_clean.to_file(
+        if research_mode and buildings_clean_pre_enrichment is not None:
+            buildings_clean_pre_enrichment.to_file(
                 folders["processed"] / "buildings_clean.gpkg",
                 layer="buildings_clean",
                 driver="GPKG",
             )
-        elif not (folders["processed"] / "buildings_height_enriched.parquet").exists():
+        elif buildings_clean_pre_enrichment is not None:
             write_geodata_cache(
-                buildings_clean,
+                buildings_clean_pre_enrichment,
                 folders["processed"] / "buildings_clean.parquet",
             )
+
+        if config.get("height_enrichment", {}).get("enabled", False):
+            enriched_path = folders["processed"] / ("buildings_height_enriched.gpkg" if research_mode else "buildings_height_enriched.parquet")
+            if research_mode:
+                buildings_clean.to_file(enriched_path, layer="buildings_height_enriched", driver="GPKG")
+            else:
+                write_geodata_cache(buildings_clean, enriched_path)
 
         aoi_metric.to_file(
             folders["processed"] / "aoi_metric.gpkg",
@@ -3319,7 +3386,15 @@ def run_workflow(config_path: Path) -> None:
     grid = create_grid(
         aoi=aoi_metric,
         cell_size_m=int(aggregation_config["cell_size_m"]),
+        grid_id_convention=aggregation_config.get("grid_id_convention", CANONICAL_GRID_ID_CONVENTION),
     )
+    current_cache_manifest.update(canonical_grid_identity(
+        grid,
+        origin_x=float(aoi_metric.total_bounds[0]),
+        origin_y=float(aoi_metric.total_bounds[1]),
+        cell_size_m=float(aggregation_config["cell_size_m"]),
+    ))
+    refresh_artifact_contracts(current_cache_manifest)
 
     unit_quality = summarize_unit_quality(grid)
 
@@ -3354,7 +3429,7 @@ def run_workflow(config_path: Path) -> None:
         cache_enabled
         and cache_config.get("use_existing_neighbor_context", False)
         and not force_refresh
-        and compatible_stage_cache
+        and compatible_neighbor_cache
         and cached_neighbor_path.exists()
     )
     if neighbor_enabled and (save_neighbor_diagnostics or use_cached_neighbor):
@@ -3455,7 +3530,7 @@ def run_workflow(config_path: Path) -> None:
         used_cached_street_context = should_use_cached_street_context(
             cache_config=cache_config,
             cached_street_context_path=cached_street_context_path,
-        ) and compatible_stage_cache
+        ) and compatible_street_assignment_cache
 
         if used_cached_street_context:
             logging.info(
@@ -3546,7 +3621,7 @@ def run_workflow(config_path: Path) -> None:
             if (
                 use_existing_if_available
                 and use_cached_streets
-                and compatible_stage_cache
+                and compatible_street_network_cache
                 and cached_streets_path.exists()
             ):
                 logging.info("Loading compatible street network: %s", cached_streets_path)
@@ -3557,11 +3632,24 @@ def run_workflow(config_path: Path) -> None:
                 stage_timings["osm_street_acquisition_cache_hit"] = True
             else:
                 logging.info("Fetching street network from OSMnx.")
-
-                streets = fetch_streets_from_osmnx(
-                    aoi=aoi_metric,
-                    network_type=network_type,
-                )
+                try:
+                    streets, street_acquisition = fetch_streets_from_osmnx(
+                        aoi=aoi_metric,
+                        network_type=network_type,
+                        acquisition_config=street_context_cfg.get("acquisition"),
+                        query_context={"scope": "analysis_aoi"},
+                        return_provenance=True,
+                    )
+                except Exception as exc:
+                    provenance = getattr(exc, "provenance", None)
+                    if provenance:
+                        (folders["reports"] / "street_acquisition_failure.json").write_text(
+                            json.dumps(make_json_serializable(provenance), indent=2),
+                            encoding="utf-8",
+                        )
+                    raise
+                current_cache_manifest["street_acquisition"] = street_acquisition
+                cache_summary["street_acquisition"] = street_acquisition
 
                 if save_streets:
                     if research_mode:
@@ -3589,7 +3677,7 @@ def run_workflow(config_path: Path) -> None:
             street_profile_start = time.perf_counter()
             if (
                 use_cached_profiles
-                and compatible_stage_cache
+                and compatible_street_profiles_cache
                 and cached_street_profiles_path.exists()
             ):
                 logging.info(

@@ -7,5 +7,6 @@ nav:
   - Home: index.md
   - Configuration: configuration.md
   - Development: development.md
+  - v0.3.0 migration: migration-v0.3.0.md
   - v0.2.0 migration: migration-v0.2.0.md
 

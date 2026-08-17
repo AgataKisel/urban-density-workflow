@@ -200,6 +200,8 @@ def test_create_grid_identifies_partial_cells():
     assert grid["is_partial_cell"].sum() == 1
     assert grid["unit_area_m2"].min() == pytest.approx(20.0)
     assert grid["unit_area_m2"].max() == pytest.approx(100.0)
+    assert set(grid["unit_id"]) == {"r00000_c00000", "r00000_c00001"}
+    assert set(grid["column_index"]) == {0, 1}
 
 
 def test_create_grid_rejects_zero_or_negative_cell_size():

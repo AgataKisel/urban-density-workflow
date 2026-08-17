@@ -141,6 +141,19 @@ Grid size is specified in metres. Smaller cells provide finer local summaries bu
 
 The Streamlit application can recalculate a selected completed analysis at another grid size. It preserves the stored analysis-area definition and scientific settings, then requests compatible reuse of prepared building, height, neighbour, and street-context products. Cache compatibility remains mandatory. Grid creation, exact building-grid intersections, grid aggregation, diagnostics, and dashboard presentation are recalculated.
 
+## Reuse and provenance
+
+Version 0.3.0 records independent compatibility contracts for cleaned
+buildings, height-enriched buildings, neighbour context, grids, and street
+context. This permits a later contextual run to reuse compatible upstream
+artifacts while recalculating only the newly requested context. Cleaned and
+height-enriched building layers have separate hashes, so a changed height
+policy cannot reuse an enriched layer as its pre-enrichment input.
+
+Regular grids use stable row/column identifiers assigned before AOI edge
+clipping. Street acquisition records its OSMnx settings; advanced YAML users
+may optionally supply `street_context.acquisition.overpass_endpoint` and
+`timeout_seconds`. If omitted, installed OSMnx defaults are used.
 
 ## Outputs
 

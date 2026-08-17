@@ -1,5 +1,6 @@
 import math
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 TEST_DIR = Path(__file__).resolve().parent
@@ -27,6 +28,7 @@ from street_context import (
     calculate_street_profile_segments,
     aggregate_street_profile_ratio_to_units,
     summarize_street_profile_quality,
+    fetch_streets_from_osmnx,
 )
 
 
@@ -37,6 +39,31 @@ def test_osm_attributes_normalize_mixed_scalars_and_lists_for_cache_export():
     assert normalized[:3] == ["123", "456|789", "named"]
     assert normalized[3] is None
     assert np.isnan(normalized[4])
+
+
+def test_osmnx_acquisition_records_explicit_endpoint_without_fallback(monkeypatch):
+    settings = SimpleNamespace(overpass_url="https://default.invalid/api", timeout=180)
+    edges = gpd.GeoDataFrame(
+        {"osmid": [1], "highway": ["residential"]},
+        geometry=[LineString([(0, 0), (10, 0)])],
+        crs=CRS_GEOGRAPHIC,
+    )
+    fake_osmnx = SimpleNamespace(
+        __version__="test", settings=settings,
+        graph_from_polygon=lambda *_args, **_kwargs: "graph",
+        graph_to_gdfs=lambda *_args, **_kwargs: edges,
+    )
+    monkeypatch.setitem(sys.modules, "osmnx", fake_osmnx)
+    aoi = gpd.GeoDataFrame(geometry=[Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])], crs=CRS_METRIC)
+    streets, provenance = fetch_streets_from_osmnx(
+        aoi, acquisition_config={"overpass_endpoint": "https://chosen.invalid/api", "timeout_seconds": 45},
+        return_provenance=True,
+    )
+    assert len(streets) == 1
+    assert streets["street_id"].iloc[0] == "street_00000"
+    assert provenance["effective_overpass_endpoint"] == "https://chosen.invalid/api"
+    assert provenance["endpoint_selection_mode"] == "explicit"
+    assert settings.overpass_url == "https://default.invalid/api"
 
 
 CRS_METRIC = "EPSG:32633"
