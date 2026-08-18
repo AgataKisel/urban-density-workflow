@@ -89,6 +89,7 @@ from interpretation import (
     write_indicator_readiness_outputs,
 )
 from performance import (
+    ARTIFACT_HASH_ALGORITHM,
     CACHE_MANIFEST_VERSION,
     INDICATOR_DEFINITION_VERSION,
     PerformanceRecorder,
@@ -101,6 +102,7 @@ from performance import (
     restore_singlepart_polygon_types,
     resolve_geodata_cache_path,
     stable_geodataframe_hash,
+    legacy_storage_compatible_hashes,
     write_geodata_cache,
 )
 
@@ -607,6 +609,7 @@ def build_cache_manifest(
         ),
     }
     manifest["artifact_layer_hashes"] = dict(manifest["input_layer_hashes"])
+    manifest["artifact_hash_algorithm"] = ARTIFACT_HASH_ALGORITHM
     refresh_artifact_contracts(manifest)
 
     return manifest
@@ -702,6 +705,17 @@ def verify_cached_building_artifact_hash(
         id_column="building_id" if "building_id" in buildings.columns else None,
         attribute_columns=[column for column in ["height_m", "num_floors", "height_source"] if column in buildings.columns],
     )
+    if actual == expected:
+        return
+    # v0.3.0 manifests predate semantic artifact hashing. Accept only a
+    # documented GeoPackage nullable-integer representation of their recorded
+    # legacy digest; modified scientific values or geometry still fail.
+    if (source_manifest or {}).get("artifact_hash_algorithm") is None and expected in legacy_storage_compatible_hashes(
+        buildings,
+        id_column="building_id" if "building_id" in buildings.columns else None,
+        attribute_columns=[column for column in ["height_m", "num_floors", "height_source"] if column in buildings.columns],
+    ):
+        return
     if actual != expected:
         raise ValueError(f"Cached `{artifact_name}` artifact hash differs from its compatibility manifest.")
 

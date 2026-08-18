@@ -4,6 +4,8 @@ from pathlib import Path
 import sys
 
 import geopandas as gpd
+import pandas as pd
+import pytest
 from shapely.geometry import box
 
 
@@ -21,9 +23,11 @@ from run_workflow import (  # noqa: E402
     evaluate_raw_building_cache,
     prepare_output_directory,
     validate_raw_buildings_match_aoi,
+    verify_cached_building_artifact_hash,
     write_cache_manifest,
 )
 from cache_contracts import compare_artifact_contracts, contract_is_compatible  # noqa: E402
+from performance import legacy_stable_geodataframe_hash, stable_geodataframe_hash  # noqa: E402
 
 
 def _inputs():
@@ -170,4 +174,87 @@ def test_manifest_keeps_distinct_clean_and_enriched_physical_hashes():
     manifest = build_cache_manifest(config, aoi, "EPSG:32631", clean, clean, enriched)
     hashes = manifest["artifact_layer_hashes"]
     assert hashes["buildings_clean"] != hashes["buildings_height_enriched"]
+
+
+def _clean_buildings_with_nullable_floors():
+    return gpd.GeoDataFrame(
+        {
+            "building_id": ["b1", "b2"],
+            "height_m": [12.0, 18.5],
+            "num_floors": pd.Series([3, pd.NA], dtype="Int64"),
+        },
+        geometry=[box(500000, 5300000, 500010, 5300010), box(500020, 5300000, 500030, 5300010)],
+        crs="EPSG:32631",
+    )
+
+
+def _building_hash_columns(buildings):
+    return [column for column in ["height_m", "num_floors", "height_source"] if column in buildings.columns]
+
+
+def test_semantic_building_hash_survives_geopackage_nullable_integer_round_trip(tmp_path):
+    buildings = _clean_buildings_with_nullable_floors()
+    source_hash = stable_geodataframe_hash(buildings, "building_id", _building_hash_columns(buildings))
+    path = tmp_path / "buildings_clean.gpkg"
+    buildings.to_file(path, layer="buildings_clean", driver="GPKG")
+
+    loaded = gpd.read_file(path, layer="buildings_clean")
+    assert str(loaded["num_floors"].dtype) == "float64"
+    assert stable_geodataframe_hash(loaded, "building_id", _building_hash_columns(loaded)) == source_hash
+    verify_cached_building_artifact_hash(
+        loaded,
+        {
+            "artifact_hash_algorithm": "semantic_geodataframe_v2",
+            "artifact_layer_hashes": {"buildings_clean": source_hash},
+        },
+        "buildings_clean",
+    )
+
+
+def test_semantic_building_hash_rejects_modified_values_or_geometry(tmp_path):
+    buildings = _clean_buildings_with_nullable_floors()
+    source_hash = stable_geodataframe_hash(buildings, "building_id", _building_hash_columns(buildings))
+    path = tmp_path / "buildings_clean.gpkg"
+    buildings.to_file(path, layer="buildings_clean", driver="GPKG")
+    loaded = gpd.read_file(path, layer="buildings_clean")
+    manifest = {
+        "artifact_hash_algorithm": "semantic_geodataframe_v2",
+        "artifact_layer_hashes": {"buildings_clean": source_hash},
+    }
+
+    changed_value = loaded.copy()
+    changed_value.loc[0, "height_m"] = 99.0
+    with pytest.raises(ValueError, match="hash differs"):
+        verify_cached_building_artifact_hash(changed_value, manifest, "buildings_clean")
+
+    changed_geometry = loaded.copy()
+    changed_geometry.loc[0, "geometry"] = box(500001, 5300000, 500011, 5300010)
+    with pytest.raises(ValueError, match="hash differs"):
+        verify_cached_building_artifact_hash(changed_geometry, manifest, "buildings_clean")
+
+
+def test_legacy_manifest_accepts_only_known_nullable_integer_storage_representation(tmp_path):
+    buildings = _clean_buildings_with_nullable_floors()
+    legacy_hash = legacy_stable_geodataframe_hash(
+        buildings, "building_id", _building_hash_columns(buildings)
+    )
+    path = tmp_path / "buildings_clean.gpkg"
+    buildings.to_file(path, layer="buildings_clean", driver="GPKG")
+    loaded = gpd.read_file(path, layer="buildings_clean")
+    legacy_manifest = {"artifact_layer_hashes": {"buildings_clean": legacy_hash}}
+
+    verify_cached_building_artifact_hash(loaded, legacy_manifest, "buildings_clean")
+
+    altered = loaded.copy()
+    altered.loc[0, "num_floors"] = 4.0
+    with pytest.raises(ValueError, match="hash differs"):
+        verify_cached_building_artifact_hash(altered, legacy_manifest, "buildings_clean")
+
+
+def test_semantic_building_hash_is_independent_of_row_order():
+    buildings = _clean_buildings_with_nullable_floors()
+    columns = _building_hash_columns(buildings)
+    assert stable_geodataframe_hash(buildings, "building_id", columns) == stable_geodataframe_hash(
+        buildings.iloc[::-1].copy(), "building_id", columns
+    )
 

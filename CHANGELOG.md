@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.3.1
+
+- Fixes a false street-context incompatibility when recalculating an existing
+  analysis at another grid size.
+- Adds storage-stable semantic hashing for cached GeoDataFrame artifacts.
+- Adds strict backward-compatible verification for the documented legacy
+  nullable-integer GeoPackage representation.
+- Adds regression coverage for grid reruns and cache-integrity round trips.
+
 ## v0.3.0
 
 - Adds artifact-aware cache contracts for compatible reuse of preprocessing,
