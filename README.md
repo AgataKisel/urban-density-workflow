@@ -128,6 +128,15 @@ The supported configuration-generator modes are:
 - `standard`: GSI, FAR/FSI, and Built Volume Density; optional height enrichment is enabled.
 - `full_context`: the standard indicators plus Average nearest-building distance and street-profile processing.
 
+### Frozen Vienna reference reproduction
+
+An offline public reference case is documented under
+[`reproducibility/vienna_frozen/`](reproducibility/vienna_frozen/README.md).
+The four licence-sensitive frozen input files are distributed separately and
+must pass the included byte-size and SHA-256 checks before execution. The
+package then runs all five indicators and verifies counts, readiness, aggregate
+values, and missing/zero semantics against the accepted Vienna result.
+
 
 ## Analysis area
 

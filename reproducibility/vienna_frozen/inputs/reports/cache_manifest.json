@@ -1,0 +1,162 @@
+{
+  "acquisition_query_wgs84_hash": "99a873a9e5c3c0dc93d40d345dd705ff9094cf80f3a181b31b929b4be5f05352",
+  "aggregation": {
+    "cell_size_m": 100,
+    "clip_to_aoi": true,
+    "grid_id_convention": "row_col_0_based_south_to_north_v1",
+    "method": "regular_grid"
+  },
+  "aoi_bounds_wgs84": {
+    "max_lat": 48.216,
+    "max_lon": 16.382,
+    "min_lat": 48.203,
+    "min_lon": 16.365
+  },
+  "aoi_geometry_hash": "ee1555440a0524d720a350b0a4ca1b8f46691a074cd75ed6e116250bd380e96b",
+  "aoi_identifier": "vienna_center_larger_frozen",
+  "aoi_name": "vienna_center_larger_frozen",
+  "artifact_cache_schema_version": 1,
+  "artifact_contracts": {
+    "building_core": {
+      "inputs": {
+        "data_source": {
+          "exclude_underground": true,
+          "provider": "aws",
+          "release": "2026-05-20.0",
+          "type": "frozen_overture_input"
+        },
+        "identity": {
+          "acquisition_query_wgs84_hash": "99a873a9e5c3c0dc93d40d345dd705ff9094cf80f3a181b31b929b4be5f05352",
+          "canonical_aoi_metric_hash": "7d10ce069730e12cc8bdd8335c73c103b7455bf16658890969c77246f98d0500",
+          "processing_mode": "single_crs",
+          "spatial_identity_schema": "canonical_spatial_identity_v1",
+          "target_metric_crs": "EPSG:32633"
+        },
+        "indicator_definition_version": "2",
+        "preprocessing": {
+          "clip_to_aoi": true,
+          "target_crs": "EPSG:32633"
+        }
+      },
+      "signature": "46ac7aacdb647084836b26be0718e3d9b0ddfc42b3c736c3d51d42d478547fe5"
+    },
+    "canonical_grid": {
+      "inputs": {
+        "aggregation": {
+          "cell_size_m": 100,
+          "clip_to_aoi": true,
+          "grid_id_convention": "row_col_0_based_south_to_north_v1",
+          "method": "regular_grid"
+        },
+        "identity": {
+          "acquisition_query_wgs84_hash": "99a873a9e5c3c0dc93d40d345dd705ff9094cf80f3a181b31b929b4be5f05352",
+          "canonical_aoi_metric_hash": "7d10ce069730e12cc8bdd8335c73c103b7455bf16658890969c77246f98d0500",
+          "processing_mode": "single_crs",
+          "spatial_identity_schema": "canonical_spatial_identity_v1",
+          "target_metric_crs": "EPSG:32633"
+        }
+      },
+      "signature": "fa6385c5a5414f1fd18745c92f14a3258288736b668ab107ffde7ded4bae098f"
+    },
+    "enriched_buildings": {
+      "inputs": {
+        "building_core": "46ac7aacdb647084836b26be0718e3d9b0ddfc42b3c736c3d51d42d478547fe5",
+        "height_enrichment": {
+          "enabled": true,
+          "min_overlap_share": 0.2,
+          "min_valid_height_m": 2.0,
+          "replace_existing_height": false
+        }
+      },
+      "signature": "11763cf574cbc772a58ee1e046497781dc1c884af4922c2d529e4c652bec4c34"
+    },
+    "neighbor_context": {
+      "inputs": {
+        "algorithm_version": "1",
+        "enriched_buildings": "11763cf574cbc772a58ee1e046497781dc1c884af4922c2d529e4c652bec4c34"
+      },
+      "signature": "60f3054e3a53c1b90e95012e60d0c0df8df0d9d26476964cb2a724383c6d3afd"
+    },
+    "street_assignments": {
+      "inputs": {
+        "enriched_buildings": "11763cf574cbc772a58ee1e046497781dc1c884af4922c2d529e4c652bec4c34",
+        "street_profiles": "b6354f58ba347fe36570965c408634c724977eb2048801a3b6b2bba92847e2c9"
+      },
+      "signature": "cb8a1bde3eeb191be2a833829e8e43d2a47ae49e968033e2215cbc7c9450529a"
+    },
+    "street_network": {
+      "inputs": {
+        "identity": {
+          "acquisition_query_wgs84_hash": "99a873a9e5c3c0dc93d40d345dd705ff9094cf80f3a181b31b929b4be5f05352",
+          "canonical_aoi_metric_hash": "7d10ce069730e12cc8bdd8335c73c103b7455bf16658890969c77246f98d0500",
+          "processing_mode": "single_crs",
+          "spatial_identity_schema": "canonical_spatial_identity_v1",
+          "target_metric_crs": "EPSG:32633"
+        },
+        "network_type": "drive",
+        "source": "osmnx"
+      },
+      "signature": "f974ccbdb54dcef05d34bcdbf251743a316673dfb9068c13f347821646e5df7f"
+    },
+    "street_profiles": {
+      "inputs": {
+        "distance_m": 10,
+        "enriched_buildings": "11763cf574cbc772a58ee1e046497781dc1c884af4922c2d529e4c652bec4c34",
+        "street_network": "f974ccbdb54dcef05d34bcdbf251743a316673dfb9068c13f347821646e5df7f",
+        "tick_length_m": 60,
+        "topology_rule_version": 1
+      },
+      "signature": "b6354f58ba347fe36570965c408634c724977eb2048801a3b6b2bba92847e2c9"
+    }
+  },
+  "artifact_hash_algorithm": "semantic_geodataframe_v2",
+  "artifact_layer_hashes": {
+    "buildings_clean": null,
+    "buildings_height_enriched": "40f84d7cb430914b250600a8d56cea939b1fe26147e26fd62590b1f04df9b2ac",
+    "buildings_raw": null
+  },
+  "building_count_after_preprocessing_enrichment": 1306,
+  "canonical_aoi_metric_area_m2": 1825409.8798595103,
+  "canonical_aoi_metric_hash": "7d10ce069730e12cc8bdd8335c73c103b7455bf16658890969c77246f98d0500",
+  "config_name": null,
+  "created_at": "frozen-vienna-public-v0.3.1",
+  "data_source": {
+    "exclude_underground": true,
+    "provider": "aws",
+    "release": "2026-05-20.0",
+    "type": "frozen_overture_input"
+  },
+  "height_enrichment": {
+    "enabled": true,
+    "min_overlap_share": 0.2,
+    "min_valid_height_m": 2.0,
+    "replace_existing_height": false
+  },
+  "indicator_definition_version": "2",
+  "input_aoi_crs": "EPSG:32633",
+  "input_layer_hashes": {
+    "buildings_clean": null,
+    "buildings_height_enriched": "40f84d7cb430914b250600a8d56cea939b1fe26147e26fd62590b1f04df9b2ac",
+    "buildings_raw": null
+  },
+  "manifest_version": 4,
+  "output_dir": "04_outputs/_verification/vienna_frozen_public_v0_3_1",
+  "preprocessing": {
+    "clip_to_aoi": true,
+    "target_crs": "EPSG:32633"
+  },
+  "processing_mode": "single_crs",
+  "raw_building_bounds_wgs84": null,
+  "raw_building_count": null,
+  "run_name": "vienna_frozen_public_v0_3_1_verification",
+  "spatial_identity_schema": "canonical_spatial_identity_v1",
+  "street_context": {
+    "distance_m": 10,
+    "enabled": true,
+    "network_type": "drive",
+    "source": "osmnx",
+    "tick_length_m": 60,
+    "topology_rule_version": 1
+  },
+  "target_metric_crs": "EPSG:32633"
+}

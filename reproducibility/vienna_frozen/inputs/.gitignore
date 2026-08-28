@@ -1,0 +1,9 @@
+# Frozen third-party inputs are distributed separately after licence review.
+*
+!.gitignore
+!README.md
+!processed/
+!reports/
+processed/*
+reports/*
+!reports/cache_manifest.json

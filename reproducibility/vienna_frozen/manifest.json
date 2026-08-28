@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "package_name": "vienna_frozen_public_reproduction",
+  "public_software_version": "0.3.2",
+  "required_public_commit": "bba9227291b8de2ec25984fd98fb0fa1a83bf757",
+  "historical_workflow_commit": "1db1813055d84328f28201ea6256b03325bf38a2",
+  "historical_evaluation_tooling_commit": "917882a02274aaea6be71df409273e3e5606cdd6",
+  "overture_release": "2026-05-20.0",
+  "input_bundle_url": "FROZEN_INPUT_BUNDLE_URL_TO_BE_ADDED_AFTER_LICENCE_REVIEW",
+  "frozen_inputs": [
+    {
+      "path": "processed/aoi_metric.gpkg",
+      "role": "accepted metric analysis-area geometry",
+      "size_bytes": 98304,
+      "sha256": "d0590b1201ce9b740871424ee5a8c0daa63f122c057ffce45da4bce1e1cbd018"
+    },
+    {
+      "path": "processed/buildings_height_enriched.gpkg",
+      "role": "accepted Overture-derived building footprints with frozen height enrichment",
+      "size_bytes": 1171456,
+      "sha256": "4cc06265bcdd8780988909800d7cdc9f0d61ad2f127b7d20988747614f0402ff"
+    },
+    {
+      "path": "processed/streets_osmnx.gpkg",
+      "role": "accepted OpenStreetMap-derived drive-network streets",
+      "size_bytes": 253952,
+      "sha256": "e68bd4e92d6679c4f09f8b5f1f50bb9a9ef1e548588994f67d941e125faf24ca"
+    },
+    {
+      "path": "reports/height_enrichment_quality.json",
+      "role": "accepted frozen height-enrichment provenance and quality record",
+      "size_bytes": 2115,
+      "sha256": "0ae74c8b54d581b1275214b941d6046854867d5e1dd9e66846fcc2809b16d111"
+    }
+  ],
+  "tracked_support_files": [
+    {
+      "path": "inputs/reports/cache_manifest.json",
+      "role": "public v0.3.2 compatibility metadata for the verified external inputs; contains no spatial data"
+    }
+  ],
+  "expected_workload": {
+    "building_count": 1306,
+    "grid_cell_count": 195,
+    "grid_cell_size_m": 100,
+    "target_crs": "EPSG:32633"
+  },
+  "scope": "Offline public-workflow reproduction of one accepted frozen Vienna case. It is not a universal reproducibility claim."
+}

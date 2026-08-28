@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "comparison_contract": {
+    "absolute_tolerance": 1e-08,
+    "relative_tolerance": 1e-09,
+    "historical_unit_id_equality_required": false,
+    "historical_canonical_hash_equality_required": false
+  },
+  "run_identity": {
+    "data_source_type": "frozen_overture_input",
+    "data_source_release": "2026-05-20.0",
+    "cell_size_m": 100,
+    "n_buildings": 1306,
+    "n_grid_cells": 195
+  },
+  "indicator_means": {
+    "gsi_mean": 0.466300459876896,
+    "far_fsi_mean": 2.0526044219831467,
+    "built_volume_density_mean": 12.226066324747455,
+    "avg_neighbor_distance_mean_m": 2.946325312771206,
+    "avg_street_profile_height_to_width_ratio_strict_mean": 1.5097387588751132
+  },
+  "readiness": {
+    "GSI / Building Coverage Ratio": "OK",
+    "FAR/FSI": "LIMITED",
+    "Built Volume Density": "OK",
+    "Neighbour distance": "OK",
+    "Street-profile height-to-width ratio": "OK"
+  },
+  "grid_value_semantics": {
+    "gsi": {"valid": 195, "missing": 0, "zero": 3},
+    "far_fsi": {"valid": 180, "missing": 15, "zero": 3},
+    "built_volume_density": {"valid": 195, "missing": 0, "zero": 3},
+    "avg_neighbor_distance_m": {"valid": 184, "missing": 11, "zero": 106},
+    "avg_street_profile_height_to_width_ratio_strict": {"valid": 183, "missing": 12, "zero": 0}
+  },
+  "coverage": {
+    "floor_valid_area_share": 0.7053838786835382,
+    "height_valid_area_share": 0.999094712680069,
+    "neighbor_distance_grid_cell_coverage_share": 0.9435897435897436,
+    "street_profile_valid_grid_cell_share": 0.9384615384615385
+  },
+  "informational_historical_identity": {
+    "mandatory": false,
+    "note": "Historical grid IDs and canonical hashes are retained only for provenance. Public v0.3.2 uses its current canonical grid identity and is validated semantically.",
+    "canonical_aoi_hash": "080c7f020259ad2dc9dab262715a81babcc78b97f52586f4f134a58076663cc8",
+    "canonical_grid_geometry_hash": "88cc26bdb4588fa525f6ccb32b639d9097fe85ae88fb853470213d9560f35f17",
+    "canonical_grid_identity_hash": "62e523116b111ad3f339c295804e39546662840867177b9add5f78424448fdd6"
+  }
+}
