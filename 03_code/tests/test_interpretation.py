@@ -4,6 +4,9 @@ import json
 from pathlib import Path
 import sys
 
+import pandas as pd
+import pytest
+
 
 TEST_DIR = Path(__file__).resolve().parent
 CODE_DIR = TEST_DIR.parent
@@ -11,6 +14,8 @@ SRC_DIR = CODE_DIR / "src"
 
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
+if str(CODE_DIR) not in sys.path:
+    sys.path.insert(0, str(CODE_DIR))
 
 
 from interpretation import (  # noqa: E402
@@ -22,6 +27,11 @@ from interpretation import (  # noqa: E402
     build_indicator_readiness_records,
     render_indicator_readiness_markdown,
     write_indicator_readiness_outputs,
+)
+from run_workflow import (  # noqa: E402
+    build_workflow_summary,
+    summarize_gsi_sanity,
+    summarize_neighbor_diagnostics,
 )
 
 
@@ -80,6 +90,26 @@ def test_gsi_over_one_warning_makes_gsi_limited():
 
     assert gsi["status"] == STATUS_LIMITED
     assert "GSI greater than 1" in gsi["status_reason"]
+
+
+def test_gsi_sanity_distinguishes_union_result_from_raw_overlap_diagnostic():
+    summary = summarize_gsi_sanity(
+        pd.DataFrame(
+            {
+                "gsi": [0.5],
+                "gsi_raw_sum": [1.0],
+                "footprint_overlap_area_m2": [50.0],
+            }
+        )
+    )
+
+    assert summary["gsi_max"] == 0.5
+    assert summary["max_raw_gsi"] == 1.0
+    assert summary["cells_with_gsi_over_1"] == 0
+    assert summary["cells_with_raw_gsi_over_1"] == 0
+    assert summary["cells_with_footprint_overlap"] == 1
+    assert summary["total_overlap_excess_area_m2"] == 50.0
+    assert summary["gsi_overlap_diagnostics_available"] is True
 
 
 def test_low_height_completeness_makes_built_volume_density_weak():
@@ -180,6 +210,66 @@ def test_segmented_neighbor_distance_coverage_is_used():
     assert neighbor["calculated"] is True
     assert neighbor["status"] == STATUS_LIMITED
     assert "0.600" in neighbor["status_reason"]
+
+
+def test_single_crs_neighbor_coverage_is_propagated_and_used():
+    neighbor_diagnostics = pd.DataFrame(
+        {
+            "neighbor_distance_m": [0.0, 2.0, None],
+            "is_zero_distance": [True, False, False],
+        }
+    )
+    neighbor_summary = summarize_neighbor_diagnostics(neighbor_diagnostics)
+    indicator_grid = pd.DataFrame(
+        {
+            "avg_neighbor_distance_m": [0.0, 1.0, None, 2.0],
+        }
+    )
+    workflow_summary = build_workflow_summary(
+        config={"aggregation": {}, "data_source": {}, "street_context": {}},
+        building_quality={},
+        unit_quality={},
+        diagnostics={},
+        indicator_grid=indicator_grid,
+        neighbor_diagnostics_summary=neighbor_summary,
+    )
+
+    assert workflow_summary["neighbor_distance_grid_cells_with_values"] == 3
+    assert workflow_summary["neighbor_distance_grid_cell_coverage_share"] == 0.75
+    assert workflow_summary["neighbor_distance_valid_building_count"] == 2
+    assert workflow_summary["neighbor_distance_valid_building_share"] == pytest.approx(
+        2 / 3
+    )
+
+    neighbor = record_by_indicator(
+        build_indicator_readiness_records(workflow_summary),
+        "Neighbour distance",
+    )
+    assert neighbor["status"] == STATUS_LIMITED
+    assert "0.750" in neighbor["status_reason"]
+    assert "0.667" in neighbor["status_reason"]
+
+
+def test_vienna_neighbor_coverage_is_ok_and_zero_is_valid():
+    summary = base_summary()
+    summary.update(
+        {
+            "neighbor_distance_grid_cells_with_values": 184,
+            "neighbor_distance_grid_cell_coverage_share": 184 / 195,
+            "neighbor_distance_valid_building_count": 1321,
+            "neighbor_distance_valid_building_share": 1.0,
+            "zero_neighbor_distance_share_building_level": 1196 / 1321,
+        }
+    )
+
+    neighbor = record_by_indicator(
+        build_indicator_readiness_records(summary),
+        "Neighbour distance",
+    )
+
+    assert neighbor["status"] == STATUS_OK
+    assert "0.944" in neighbor["status_reason"]
+    assert "1.000" in neighbor["status_reason"]
 
 
 def test_low_neighbor_distance_coverage_warning_is_explicit():

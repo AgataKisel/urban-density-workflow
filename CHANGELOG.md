@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.3.2
+
+- Fixes official union-based GSI v2 in the optimized shared-area calculation
+  path so overlapping or duplicate footprint area cannot inflate official GSI.
+- Retains raw summed footprint coverage and overlap measures as diagnostics
+  distinct from official GSI.
+- Restores neighbour-distance grid-cell and building coverage propagation to
+  interpretation-readiness reporting.
+- Adds normal-workflow regression coverage for GSI overlap cases and neighbour
+  readiness reporting.
+
 ## v0.3.1
 
 - Fixes a false street-context incompatibility when recalculating an existing

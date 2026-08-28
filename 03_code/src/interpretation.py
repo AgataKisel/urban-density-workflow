@@ -371,8 +371,12 @@ def _neighbor_distance_record(summary: dict[str, Any]) -> dict[str, Any]:
         calculated = _has_value(summary.get("avg_neighbor_distance_mean_m")) or _has_value(
             summary.get("avg_neighbor_distance_median_m")
         )
-        coverage = None
-        building_share = None
+        coverage = _as_float(
+            summary.get("neighbor_distance_grid_cell_coverage_share")
+        )
+        building_share = _as_float(
+            summary.get("neighbor_distance_valid_building_share")
+        )
 
     record["calculated"] = calculated
     if not calculated:

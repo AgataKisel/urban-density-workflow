@@ -75,6 +75,8 @@ from spatial_identity import (
     canonical_metric_aoi_identity,
 )
 from indicators import (
+    FOOTPRINT_OVERLAP_AREA_TOLERANCE_M2,
+    GSI_NUMERICAL_TOLERANCE,
     run_indicators,
     calculate_building_neighbor_diagnostics,
 )
@@ -1128,6 +1130,9 @@ def summarize_gsi_sanity(
         "gsi_max": None,
         "cells_with_gsi_below_0": None,
         "cells_with_gsi_over_1": None,
+        "cells_with_raw_gsi_over_1": None,
+        "cells_with_footprint_overlap": None,
+        "gsi_overlap_diagnostics_available": False,
         "gsi_over_1_diagnostics_available": False,
         "max_raw_gsi": None,
         "max_dissolved_gsi": None,
@@ -1149,6 +1154,35 @@ def summarize_gsi_sanity(
     summary["gsi_max"] = float(valid_gsi.max()) if not valid_gsi.empty else None
     summary["cells_with_gsi_below_0"] = int((gsi_values < 0).sum())
     summary["cells_with_gsi_over_1"] = int((gsi_values > 1).sum())
+
+    if "gsi_raw_sum" in indicator_grid.columns:
+        raw_values = pd.to_numeric(
+            indicator_grid["gsi_raw_sum"],
+            errors="coerce",
+        )
+        summary["gsi_overlap_diagnostics_available"] = True
+        summary["cells_with_raw_gsi_over_1"] = int((raw_values > 1).sum())
+        valid_raw = raw_values.dropna()
+        summary["max_raw_gsi"] = (
+            float(valid_raw.max()) if not valid_raw.empty else None
+        )
+        summary["max_dissolved_gsi"] = summary["gsi_max"]
+        summary["all_dissolved_gsi_within_expected_range"] = bool(
+            ((gsi_values >= -GSI_NUMERICAL_TOLERANCE)
+             & (gsi_values <= 1 + GSI_NUMERICAL_TOLERANCE))
+            .fillna(False)
+            .all()
+        )
+
+    if "footprint_overlap_area_m2" in indicator_grid.columns:
+        overlap_values = pd.to_numeric(
+            indicator_grid["footprint_overlap_area_m2"],
+            errors="coerce",
+        ).fillna(0.0)
+        summary["cells_with_footprint_overlap"] = int(
+            (overlap_values > FOOTPRINT_OVERLAP_AREA_TOLERANCE_M2).sum()
+        )
+        summary["total_overlap_excess_area_m2"] = float(overlap_values.sum())
 
     if gsi_over_1_diagnostics is not None and not gsi_over_1_diagnostics.empty:
         summary["gsi_over_1_diagnostics_available"] = True
@@ -1272,6 +1306,14 @@ def summarize_neighbor_diagnostics(
     valid_ratio_count = count_true("has_valid_height_to_distance_ratio")
     near_boundary_count = count_true("is_near_aoi_boundary")
     missing_height_count = n_buildings - count_true("has_valid_height")
+    if "neighbor_distance_m" in neighbor_diagnostics.columns:
+        neighbor_distance_values = pd.to_numeric(
+            neighbor_diagnostics["neighbor_distance_m"],
+            errors="coerce",
+        )
+        valid_neighbor_distance_count = int(neighbor_distance_values.notna().sum())
+    else:
+        valid_neighbor_distance_count = 0
 
     high_ratio_mask = pd.Series(False, index=neighbor_diagnostics.index)
 
@@ -1312,6 +1354,8 @@ def summarize_neighbor_diagnostics(
         "high_ratio_threshold": high_ratio_threshold,
         "zero_distance_count": zero_distance_count,
         "zero_distance_share": share(zero_distance_count),
+        "valid_neighbor_distance_count": valid_neighbor_distance_count,
+        "valid_neighbor_distance_share": share(valid_neighbor_distance_count),
         "near_zero_distance_count": near_zero_distance_count,
         "near_zero_distance_share": share(near_zero_distance_count),
         "missing_height_count": int(missing_height_count),
@@ -1400,6 +1444,21 @@ def build_workflow_summary(
     street_context_cfg = config.get("street_context", {})
 
     old_valid_cells = valid_count_from_column("height_distance_valid_count")
+
+    if "avg_neighbor_distance_m" in indicator_grid.columns:
+        neighbor_grid_values = pd.to_numeric(
+            indicator_grid["avg_neighbor_distance_m"],
+            errors="coerce",
+        )
+        neighbor_grid_cells_with_values = int(neighbor_grid_values.notna().sum())
+        neighbor_grid_cell_coverage_share = (
+            float(neighbor_grid_cells_with_values / len(indicator_grid))
+            if len(indicator_grid) > 0
+            else None
+        )
+    else:
+        neighbor_grid_cells_with_values = None
+        neighbor_grid_cell_coverage_share = None
 
     new_valid_cells = get_value(
         street_profile_quality,
@@ -1633,6 +1692,20 @@ def build_workflow_summary(
         "zero_neighbor_distance_share_building_level": get_value(
             neighbor_diagnostics_summary,
             "zero_distance_share",
+        ),
+        "neighbor_distance_grid_cells_with_values": (
+            neighbor_grid_cells_with_values
+        ),
+        "neighbor_distance_grid_cell_coverage_share": (
+            neighbor_grid_cell_coverage_share
+        ),
+        "neighbor_distance_valid_building_count": get_value(
+            neighbor_diagnostics_summary,
+            "valid_neighbor_distance_count",
+        ),
+        "neighbor_distance_valid_building_share": get_value(
+            neighbor_diagnostics_summary,
+            "valid_neighbor_distance_share",
         ),
         "old_height_distance_valid_cells": old_valid_cells,
         "nearest_neighbor_height_distance_ratio_role": "diagnostic_only",

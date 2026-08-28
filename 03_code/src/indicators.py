@@ -478,20 +478,89 @@ def calculate_area_indicators_shared(
     total_area = (
         intersections.groupby("unit_id")["area_in_unit_m2"]
         .sum()
-        .rename("building_footprint_area_m2")
+        .rename("building_footprint_area_raw_sum_m2")
         .reset_index()
         if not intersections.empty
-        else pd.DataFrame(columns=["unit_id", "building_footprint_area_m2"])
+        else pd.DataFrame(
+            columns=["unit_id", "building_footprint_area_raw_sum_m2"]
+        )
     )
     base = out_base.merge(total_area, on="unit_id", how="left")
-    base["building_footprint_area_m2"] = base["building_footprint_area_m2"].fillna(0.0)
-    no_buildings = base["building_footprint_area_m2"] == 0
+    base["building_footprint_area_raw_sum_m2"] = base[
+        "building_footprint_area_raw_sum_m2"
+    ].fillna(0.0)
+    no_buildings = base["building_footprint_area_raw_sum_m2"] == 0
     results: dict[str, pd.DataFrame] = {}
 
     if "gsi" in requested:
-        result = base[["unit_id", "building_footprint_area_m2", "unit_area_m2"]].copy()
-        result["gsi"] = result["building_footprint_area_m2"] / result["unit_area_m2"]
-        results["gsi"] = result[["unit_id", "building_footprint_area_m2", "gsi"]]
+        if intersections.empty:
+            union_area = pd.DataFrame(
+                columns=["unit_id", "building_footprint_union_area_m2"]
+            )
+        else:
+            union_area = intersections[["unit_id", "geometry"]].dissolve(
+                by="unit_id",
+                as_index=False,
+            )
+            union_area["building_footprint_union_area_m2"] = union_area.geometry.area
+
+        result = base.merge(
+            union_area[["unit_id", "building_footprint_union_area_m2"]],
+            on="unit_id",
+            how="left",
+        )
+        result["building_footprint_union_area_m2"] = result[
+            "building_footprint_union_area_m2"
+        ].fillna(0.0)
+        result["footprint_overlap_area_m2"] = (
+            result["building_footprint_area_raw_sum_m2"]
+            - result["building_footprint_union_area_m2"]
+        )
+        result.loc[
+            result["footprint_overlap_area_m2"].abs()
+            <= FOOTPRINT_OVERLAP_AREA_TOLERANCE_M2,
+            "footprint_overlap_area_m2",
+        ] = 0.0
+        if (
+            result["footprint_overlap_area_m2"]
+            < -FOOTPRINT_OVERLAP_AREA_TOLERANCE_M2
+        ).any():
+            raise RuntimeError("Unioned footprint coverage exceeds raw summed coverage.")
+
+        result["building_footprint_area_m2"] = result[
+            "building_footprint_union_area_m2"
+        ]
+        result["gsi"] = (
+            result["building_footprint_union_area_m2"] / result["unit_area_m2"]
+        )
+        result["gsi_raw_sum"] = (
+            result["building_footprint_area_raw_sum_m2"] / result["unit_area_m2"]
+        )
+        result["gsi_overlap_difference"] = result["gsi_raw_sum"] - result["gsi"]
+        result["footprint_overlap_flag"] = (
+            result["footprint_overlap_area_m2"]
+            > FOOTPRINT_OVERLAP_AREA_TOLERANCE_M2
+        )
+        if (
+            (result["gsi"] < -GSI_NUMERICAL_TOLERANCE)
+            | (result["gsi"] > 1 + GSI_NUMERICAL_TOLERANCE)
+        ).any():
+            raise RuntimeError(
+                "Union-based GSI falls outside [0, 1] beyond numerical tolerance."
+            )
+        results["gsi"] = result[
+            [
+                "unit_id",
+                "building_footprint_area_m2",
+                "building_footprint_area_raw_sum_m2",
+                "building_footprint_union_area_m2",
+                "gsi",
+                "gsi_raw_sum",
+                "footprint_overlap_area_m2",
+                "gsi_overlap_difference",
+                "footprint_overlap_flag",
+            ]
+        ]
 
     if "far_fsi" in requested:
         if intersections.empty:
@@ -521,8 +590,9 @@ def calculate_area_indicators_shared(
         result.loc[no_buildings, "floor_area_sum_m2"] = 0.0
         result["far_fsi"] = result["floor_area_sum_m2"] / result["unit_area_m2"]
         result["floor_data_valid_area_share"] = np.where(
-            result["building_footprint_area_m2"] > 0,
-            result["floor_data_valid_area_m2"] / result["building_footprint_area_m2"],
+            result["building_footprint_area_raw_sum_m2"] > 0,
+            result["floor_data_valid_area_m2"]
+            / result["building_footprint_area_raw_sum_m2"],
             np.nan,
         )
         results["far_fsi"] = result[
@@ -556,8 +626,9 @@ def calculate_area_indicators_shared(
         result.loc[no_buildings, "built_volume_m3"] = 0.0
         result["built_volume_density"] = result["built_volume_m3"] / result["unit_area_m2"]
         result["height_valid_area_share"] = np.where(
-            result["building_footprint_area_m2"] > 0,
-            result["height_valid_area_m2"] / result["building_footprint_area_m2"],
+            result["building_footprint_area_raw_sum_m2"] > 0,
+            result["height_valid_area_m2"]
+            / result["building_footprint_area_raw_sum_m2"],
             np.nan,
         )
         results["built_volume_density"] = result[
@@ -1030,7 +1101,16 @@ INDICATOR_REGISTRY = {
         function=calculate_gsi,
         required_building_cols=("building_id", "geometry"),
         required_unit_cols=("unit_id", "geometry"),
-        output_cols=("building_footprint_area_m2", "gsi"),
+        output_cols=(
+            "building_footprint_area_m2",
+            "building_footprint_area_raw_sum_m2",
+            "building_footprint_union_area_m2",
+            "gsi",
+            "gsi_raw_sum",
+            "footprint_overlap_area_m2",
+            "gsi_overlap_difference",
+            "footprint_overlap_flag",
+        ),
         default_enabled=True,
         conditional=False,
         description="Horizontal building coverage per aggregation unit.",
